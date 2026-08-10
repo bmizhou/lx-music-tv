@@ -1,5 +1,12 @@
 # LX Music TV - Android TV 音乐播放器
 
+![release](https://img.shields.io/github/v/release/bmizhou/lx-music-tv)
+![downloads](https://img.shields.io/github/downloads/bmizhou/lx-music-tv)
+![platform](https://img.shields.io/badge/platform-Android_TV-green)
+![Kotlin](https://img.shields.io/badge/Kotlin-Compose_for_TV-purple)
+![minSdk](https://img.shields.io/badge/minSdk-23-blue)
+![license](https://img.shields.io/github/license/bmizhou/lx-music-tv)
+
 说明：本项目由AI开发，如果使用过程中遇到问题可以尝试用ai解决，以下内容也是大部分由AI生成的说明，不一定准确。
 
 一款专为 Android TV 设计的音乐播放器，完美支持遥控器操作，参考洛雪音乐（lx-music）功能设计，支持导入洛雪 JS 播放源。
