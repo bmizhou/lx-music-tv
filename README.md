@@ -1,7 +1,7 @@
 # LX Music TV - Android TV 音乐播放器
 
 ![release](https://img.shields.io/github/v/release/bmizhou/lx-music-tv)
-![downloads](https://img.shields.io/github/downloads/bmizhou/lx-music-tv)
+![downloads](https://img.shields.io/github/downloads/bmizhou/lx-music-tv/total)
 ![platform](https://img.shields.io/badge/platform-Android_TV-green)
 ![Kotlin](https://img.shields.io/badge/Kotlin-Compose_for_TV-purple)
 ![minSdk](https://img.shields.io/badge/minSdk-23-blue)
