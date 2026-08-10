@@ -1,0 +1,73 @@
+# Baseline Profile（手写规则，随 APK 编译进 assets/dexopt/baseline.prof）
+#
+# 作用：让下列热路径（启动 + 各主屏组合 + Compose Lazy 列表滚动 + 图片解码 + 播放/搜索）
+# 在 Android TV 上获得 AOT 预热，缓解首启与上下切歌单 / 滚动时的掉帧。
+#
+# 格式（profman 标准语法，非 workaround）：
+#   - 类规则：裸 `L<类>;` —— 整类纳入预热，【绝不可带 H/S/P 标志】（类规则不支持标志是语法铁律）。
+#   - 方法规则：`<标记><类>-><方法>(<参数>)<返回>`，标记可用 H/S/P（如 HSPLcom/foo/Bar;->baz()V）。
+# 本文件统一用裸类规则（稳健、零误报）。
+#
+# 历史：旧 Compose BOM 合并后曾产出带 H/S/P 标志的畸形类规则，导致
+# `Error parsing baseline-prof.txt: Class rules don't support flags`；当时靠
+# build.gradle.kts 里的 fixMergedBaselineProfile 补丁任务规避。
+# 现状（AGP 9.3）：合并已不再产生畸形类规则，该补丁任务已删除；
+# 由 androidx.profileinstaller:1.4.1 在运行时下发 profile，手写规则直接生效。
+
+# ===== Compose 基础 Lazy 列表（滚动高频）=====
+Landroidx/compose/foundation/lazy/LazyColumnKt;
+Landroidx/compose/foundation/lazy/LazyRowKt;
+Landroidx/compose/foundation/lazy/grid/LazyGridKt;
+Landroidx/compose/foundation/lazy/grid/LazyVerticalGridKt;
+Landroidx/compose/foundation/lazy/LazyLayoutKt;
+Landroidx/compose/foundation/lazy/layout/LazyLayoutKt;
+Landroidx/compose/foundation/lazy/LazyItemScopeKt;
+Landroidx/compose/foundation/lazy/grid/LazyGridScope;
+Landroidx/compose/foundation/lazy/items;
+Landroidx/compose/foundation/lazy/grid/LazyGridScopeImpl;
+
+# ===== Compose 运行时热点 =====
+Landroidx/compose/runtime/ComposerImpl;
+Landroidx/compose/ui/platform/AndroidComposeView;
+Landroidx/compose/foundation/AndroidEmbeddedExternalSurface;
+
+# ===== 应用启动 / 入口 =====
+Lcom/lxmusic/tv/LXMusicApplication;
+Lcom/lxmusic/tv/MainActivity;
+Lcom/lxmusic/tv/presentation/theme/ThemeKt;
+Lcom/lxmusic/tv/data/storage/DataStoreManager;
+Lcom/lxmusic/tv/viewmodel/MainViewModel;
+
+# ===== 各主屏（进入即组合，高频）=====
+Lcom/lxmusic/tv/presentation/screen/MainScreenKt;
+Lcom/lxmusic/tv/presentation/screen/SearchScreenKt;
+Lcom/lxmusic/tv/presentation/screen/SearchResultScreenKt;
+Lcom/lxmusic/tv/presentation/screen/FavoritesScreenKt;
+Lcom/lxmusic/tv/presentation/screen/PlayerScreenKt;
+Lcom/lxmusic/tv/presentation/screen/SourceManagementScreenKt;
+Lcom/lxmusic/tv/presentation/screen/InterfaceSettingsScreenKt;
+Lcom/lxmusic/tv/presentation/screen/TvKeyboardKt;
+
+# ===== 通用组件（焦点 / 图片，列表行高频使用）=====
+Lcom/lxmusic/tv/presentation/component/RemoteImageKt;
+Lcom/lxmusic/tv/presentation/component/FocusIndicatorsKt;
+
+# ===== 播放服务（后台长驻 + 高频调用）=====
+Lcom/lxmusic/tv/service/player/PlayerService;
+Lcom/lxmusic/tv/service/http/HttpServer;
+
+# ===== 网络 / 搜索 / 数据源（播放与搜索热路径）=====
+Lcom/lxmusic/tv/network/HttpClient;
+Lcom/lxmusic/tv/network/NeteaseApi;
+Lcom/lxmusic/tv/network/NeteaseWeApi;
+Lcom/lxmusic/tv/network/KuwoApi;
+Lcom/lxmusic/tv/network/QQMusicApi;
+Lcom/lxmusic/tv/network/KugouApi;
+Lcom/lxmusic/tv/data/source/MusicSearchService;
+Lcom/lxmusic/tv/data/source/BrowseDataService;
+Lcom/lxmusic/tv/data/source/SourceManagerImpl;
+
+# ===== JS 引擎（自定义源搜索热路径）=====
+Lcom/lxmusic/tv/script/JavaScriptEngine;
+Lcom/lxmusic/tv/script/SourceExecutor;
+Lcom/lxmusic/tv/script/QuickJSPreload;

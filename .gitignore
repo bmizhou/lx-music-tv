@@ -1,0 +1,40 @@
+# 编译生成的目录 (核心：忽略所有 build 和 .gradle 文件夹)
+.gradle/
+build/
+**/build/
+
+# 编译输出的文件
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+
+# 自动生成的目录
+bin/
+gen/
+out/
+.externalNativeBuild
+.cxx/
+
+# 本地配置文件 (包含 SDK 路径等，绝对不能提交)
+local.properties
+
+# Android Studio / IntelliJ IDEA 配置 (个人环境配置，不应提交)
+.idea/
+*.iml
+*.iws
+*.ipr
+.navigation/
+captures/
+
+# 证书文件 (如果有放在项目里，建议取消注释)
+# *.jks
+# *.keystore
+
+# 操作系统自动生成的隐藏文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
