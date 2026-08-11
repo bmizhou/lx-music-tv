@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import android.content.Context
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import android.os.SystemClock
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,8 +32,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,6 +60,7 @@ import com.lxmusic.tv.data.cache.CacheManager
 import com.lxmusic.tv.data.model.AudioQuality
 import com.lxmusic.tv.data.model.BrowseItem
 import com.lxmusic.tv.data.model.BrowseType
+import com.lxmusic.tv.data.model.Favorite
 import com.lxmusic.tv.data.model.MusicPlatform
 import com.lxmusic.tv.data.model.SearchType
 import com.lxmusic.tv.data.model.Song
@@ -95,6 +101,8 @@ fun MainScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToSourceManagement: () -> Unit,
     onNavigateToInterfaceSettings: () -> Unit = {},
+    // 2.8 缓存管理独立子页面
+    onNavigateToCacheManage: () -> Unit = {},
     onNavigateToPlayer: () -> Unit = {},
     currentSong: com.lxmusic.tv.data.model.Song? = null,
     isPlaying: Boolean = false,
@@ -167,6 +175,23 @@ fun MainScreen(
     var navInitialFocusRequested by rememberSaveable { mutableStateOf(false) }
     // 从子路由返回的信号：递增后通知当前 tab 页面恢复内容焦点（如设置页回到点击的卡片）
     var contentRestoreTick by remember { mutableIntStateOf(0) }
+    // 2.8 侧栏 Logo 点击 → 平台选择对话框（切换默认音乐平台）
+    var showLogoPlatformDialog by remember { mutableStateOf(false) }
+
+    // ===== Logo 焦点兜底（2.8 治本方案：区分「系统分配」与「用户按键」）=====
+    // Logo 可点击后成为侧栏第一个可聚焦节点；Compose 在「组合重建/视图切换导致焦点清除」时按布局
+    // 顺序默认分配焦点 → 落 Logo（进入详情、返回列表、子路由返回等场景）。
+    // 区分机制：用户主动聚焦 Logo 一定是「方向键按下」触发的焦点导航（按键先于聚焦）；
+    // 系统自动分配则无任何按键操作。故：Logo 获得焦点时，若距上次用户按键 > 300ms，
+    // 判定为系统分配 → 立即（同一帧）移回当前选中 tab，用户感知不到闪烁。
+    var lastKeyPressTime by remember { mutableLongStateOf(0L) }
+    var logoFocusTime by remember { mutableLongStateOf(0L) }
+    var logoFocused by remember { mutableStateOf(false) }
+    LaunchedEffect(logoFocused) {
+        if (logoFocused && logoFocusTime - lastKeyPressTime > 300) {
+            navRequesters[selectedTab].requestFocus()
+        }
+    }
 
     // 主页返回键第一次按下（焦点在内容区）→ 焦点送回侧栏当前选中 tab（不弹退出确认）
     LaunchedEffect(navFocusRequestTick) {
@@ -184,9 +209,11 @@ fun MainScreen(
                 markAttempted = { navInitialFocusRequested = true }
             )
         } else {
-            // 从子路由返回（navInitialFocusRequested 由 saveable 恢复为 true）：
-            // 不抢焦点，通知当前 tab 页面恢复离开时的内容焦点（如设置页的播放源管理卡片）
+            // 从子路由返回（播放页/设置二级页/缓存管理等）：
+            // 立即聚焦当前选中 tab，消除「重新组合后焦点空白 → 按键从侧栏 logo 乱跳」的问题；
+            // 设置页等有内容恢复逻辑的 tab 会随后经 contentRestoreTick 抢回内容焦点
             contentRestoreTick++
+            navRequesters[selectedTab].requestFocus()
         }
     }
 
@@ -197,6 +224,15 @@ fun MainScreen(
             .fillMaxSize()
             // 2.5 浅色主题：主区浅灰白 #F5F5F7（仿 EchoMusic）
             .background(LXSurfaceMain)
+            // 2.8 记录用户「上键」时间（区分「用户方向键主动聚焦 logo」与「系统默认分配」）：
+            // 聚焦 logo 的唯一方向键路径是「上键」（从选中 tab 按上），进详情/切页用的是右/下/确定键；
+            // 故仅上键会触发用户主动聚焦 logo 的判定，系统分配落 logo 时距上次上键必然 > 300ms
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionUp) {
+                    lastKeyPressTime = SystemClock.uptimeMillis()
+                }
+                false
+            }
     ) {
             // 左侧导航栏
             NavigationSidebar(
@@ -206,6 +242,13 @@ fun MainScreen(
                 contentEnterRequester = contentEnterRequester,
                 // Logo 下方展示当前默认音乐平台
                 platform = defaultPlatform,
+                // 2.8 Logo 可点击：切换默认音乐平台（点击即用户主动，弹出平台选择框）
+                onLogoClick = { showLogoPlatformDialog = true },
+                // 2.8 Logo 焦点状态上报：记录聚焦时刻，兜底判断「系统分配 vs 用户按键」
+                onLogoFocusChanged = { focused ->
+                    logoFocused = focused
+                    if (focused) logoFocusTime = SystemClock.uptimeMillis()
+                },
                 // 侧栏焦点状态上报（返回键逻辑用）
                 onNavBarFocusChanged = onNavBarFocusChanged,
                 currentSong = currentSong,
@@ -232,6 +275,7 @@ fun MainScreen(
                 onNavigateToSettings = onNavigateToSettings,
                 onNavigateToSourceManagement = onNavigateToSourceManagement,
                 onNavigateToInterfaceSettings = onNavigateToInterfaceSettings,
+                onNavigateToCacheManage = onNavigateToCacheManage,
                 // 搜索页内嵌参数（2.6）
                 searchQuery = searchQuery,
                 searchPlatform = searchPlatform,
@@ -282,6 +326,18 @@ fun MainScreen(
                     .fillMaxHeight()
             )
         }
+
+        // 2.8 侧栏 Logo 点击 → 平台选择对话框（切换默认音乐平台）
+        if (showLogoPlatformDialog) {
+            PlatformSelectDialog(
+                currentPlatform = defaultPlatform,
+                onSelect = { platform ->
+                    onDefaultPlatformChange(platform)
+                    showLogoPlatformDialog = false
+                },
+                onDismiss = { showLogoPlatformDialog = false }
+            )
+        }
     }
 
 /**
@@ -295,6 +351,10 @@ fun NavigationSidebar(
     contentEnterRequester: FocusRequester,
     // 当前默认音乐平台（Logo 下方展示）
     platform: MusicPlatform = MusicPlatform.KW,
+    // 2.8 Logo 可点击：点击弹出平台选择对话框（MainScreen 层处理）
+    onLogoClick: () -> Unit = {},
+    // 2.8 Logo 焦点状态上报（MainScreen 用于「系统默认分配落 logo 时移回当前 tab」的兜底）
+    onLogoFocusChanged: (Boolean) -> Unit = {},
     // 侧栏是否持有焦点（MainActivity 返回键逻辑用：焦点在内容区时第一次返回先回 tab）
     onNavBarFocusChanged: (Boolean) -> Unit = {},
     currentSong: com.lxmusic.tv.data.model.Song? = null,
@@ -335,11 +395,30 @@ fun NavigationSidebar(
                 .padding(horizontal = 6.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-        // Logo区域（窄栏：小图标 + 底部显示当前音乐平台名）
+        // Logo区域（窄栏：小图标 + 底部显示当前音乐平台名；2.8 可点击切换音乐平台）
+        // 焦点样式与下方 tab 项（NavigationItem）完全一致：聚焦 LXFocusFill 背景 + 同款边框，
+        // modifier 顺序也对齐（lxFocusBorder 在 clickable 之前）
+        var logoFocused by remember { mutableStateOf(false) }
+        val logoBgColor = if (logoFocused) LXFocusFill else Color.Transparent
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(64.dp),
+                .height(64.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(logoBgColor)
+                .onFocusChanged {
+                    logoFocused = it.isFocused
+                    onLogoFocusChanged(it.isFocused)
+                }
+                .lxFocusBorder(
+                    shape = RoundedCornerShape(10.dp),
+                    glow = false,
+                    animated = false,
+                    unfocusedColor = Color.Transparent,
+                    unfocusedWidth = 0.dp
+                )
+                // Logo 可点击：弹出平台选择对话框（clickable 自带 focusable，遥控器可聚焦）
+                .clickable { onLogoClick() },
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -407,10 +486,27 @@ fun NowPlayingBar(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // 2.8 封面旋转动画：播放中缓慢匀速旋转（8s/圈，黑胶/光盘感），暂停停止并平滑归 0
+        val coverRotation = remember { Animatable(0f) }
+        LaunchedEffect(isPlaying) {
+            if (isPlaying) {
+                while (true) {
+                    coverRotation.animateTo(
+                        coverRotation.value + 360f,
+                        animationSpec = tween(durationMillis = 8000, easing = LinearEasing)
+                    )
+                }
+            } else {
+                coverRotation.animateTo(0f, animationSpec = tween(durationMillis = 300))
+            }
+        }
+
         // 封面：点击进入播放页
         Box(
             modifier = Modifier
                 .size(44.dp)
+                // 播放旋转 / 暂停归 0（graphicsLayer 默认以中心为旋转轴）
+                .graphicsLayer { rotationZ = coverRotation.value }
                 .clip(RoundedCornerShape(10.dp))
                 // 统一圆形聚焦（填充+焦点环一次性绘制，无空带、边框粗细统一）
                 .lxCircleButtonFocus()
@@ -556,6 +652,8 @@ fun MainContent(
     onNavigateToSettings: () -> Unit,
     onNavigateToSourceManagement: () -> Unit,
     onNavigateToInterfaceSettings: () -> Unit = {},
+    // 2.8 缓存管理独立子页面
+    onNavigateToCacheManage: () -> Unit = {},
     // ===== 搜索页内嵌参数（2.6：tab 内容区直接渲染搜索页，保留左侧导航栏）=====
     searchQuery: String = "",
     searchPlatform: MusicPlatform = MusicPlatform.KW,
@@ -710,6 +808,8 @@ fun MainContent(
             4 -> SettingsScreen(
                 onNavigateToSourceManagement = onNavigateToSourceManagement,
                 onNavigateToInterfaceSettings = onNavigateToInterfaceSettings,
+                // 2.8 缓存管理独立子页面
+                onNavigateToCacheManage = onNavigateToCacheManage,
                 defaultPlatform = defaultPlatform,
                 onDefaultPlatformChange = onDefaultPlatformChange,
                 preferredQuality = preferredQuality,
@@ -987,6 +1087,36 @@ fun BrowsePage(
         }
     }
 
+    // 2.8 从详情返回列表时，焦点回到之前点击的那张卡片（而非丢到列表顶部/侧栏 logo）。
+    // 网格 LazyGrid state 跨详情持久、滚动位置保留，返回时视口内卡片同帧已组合：
+    // 直接 requestFocus（不等帧/不滚动），杜绝「焦点空白 → 乱跳 → 再定位」的闪烁。
+    var hasOpenedDetail by remember { mutableStateOf(false) }
+    var lastOpenedCardIndex by remember { mutableStateOf(0) }
+    // 每张卡片的 FocusRequester 登记表（按 index）：返回时按 index 精准聚焦
+    val cardFocusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
+    LaunchedEffect(selected) {
+        if (selected == null && hasOpenedDetail) {
+            val target = lastOpenedCardIndex
+            cardFocusRequesters[target]?.requestFocus()
+            // 兜底：目标卡片不在视口（未组合）时滚动过去再聚焦一次
+            if (cardFocusRequesters[target] == null) {
+                gridState.scrollToItem(target)
+                withFrameNanos {}
+                withFrameNanos {}
+                cardFocusRequesters[target]?.requestFocus()
+            }
+            hasOpenedDetail = false
+        }
+    }
+
+    // 2.8 详情顶部返回按钮焦点请求器：进入详情立即聚焦它，消除「歌曲加载中焦点空白 → 按键从侧栏 logo 起跳」的问题
+    val detailBackRequester = remember { FocusRequester() }
+    LaunchedEffect(selected != null) {
+        if (selected != null) {
+            detailBackRequester.requestFocus()
+        }
+    }
+
     Column(
         modifier = modifier
             .padding(24.dp)
@@ -999,7 +1129,13 @@ fun BrowsePage(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(48.dp).lxBackButtonFocus()) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .focusRequester(detailBackRequester)
+                        .lxBackButtonFocus()
+                ) {
                     Icon(
                         imageVector = Icons.Default.ArrowBack,
                         contentDescription = "返回",
@@ -1117,16 +1253,26 @@ fun BrowsePage(
                     ) {
                         // 稳定 key（id）：列表滚动/数据更新时避免 item 状态错乱与多余重组
                         itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
+                            // 2.8 返回列表时聚焦回原卡片：每张卡片登记 FocusRequester
+                            val cardRequester = remember(item.id) { FocusRequester() }
+                            SideEffect { cardFocusRequesters[index] = cardRequester }
                             BrowseCard(
                                 item = item,
                                 index = index,
-                                onClick = { onItemClick(item) },
+                                onClick = {
+                                    // 2.8 记录进入详情前的位置（返回时聚焦回这张卡片）
+                                    hasOpenedDetail = true
+                                    lastOpenedCardIndex = index
+                                    onItemClick(item)
+                                },
                                 // 列表首项承载「右键进入」焦点请求器；首列卡片拦截左键返回选中 tab
                                 contentEnterRequester = if (index == firstVisibleCardIndex) contentEnterRequester else null,
                                 onExitToNav = onExitToNav,
                                 interceptLeftExit = index % 5 == 0,
                                 onCardFocused = { idx -> focusedCardIndex = idx },
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(cardRequester)
                             )
                         }
                         // 底部加载更多提示（稳定 key：防止 loading 项插入/移除导致 grid slot 错位、焦点项被重建）
@@ -1574,6 +1720,8 @@ private fun formatDuration(durationMs: Long): String {
 fun SettingsScreen(
     onNavigateToSourceManagement: () -> Unit,
     onNavigateToInterfaceSettings: () -> Unit = {},
+    // 2.8 缓存管理改为独立子页面
+    onNavigateToCacheManage: () -> Unit = {},
     defaultPlatform: MusicPlatform = MusicPlatform.KW,
     onDefaultPlatformChange: (MusicPlatform) -> Unit = {},
     preferredQuality: AudioQuality = AudioQuality.QUALITY_320K,
@@ -1589,8 +1737,6 @@ fun SettingsScreen(
     var showPlatformDialog by remember { mutableStateOf(false) }
     var showQualityDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
-    // 2.7 缓存管理弹窗
-    var showCacheDialog by remember { mutableStateOf(false) }
 
     // 设置列表滚动状态（重复点击「设置」tab 时滚动回顶部）
     val settingsScrollState = rememberScrollState()
@@ -1683,7 +1829,11 @@ fun SettingsScreen(
                 title = "缓存管理",
                 subtitle = "查看与清理音频、封面、歌词缓存",
                 icon = Icons.Default.Storage,
-                onClick = { showCacheDialog = true },
+                onClick = {
+                    // 2.8 改为独立子页面；记录点击项：从子路由返回时恢复焦点到本卡片
+                    lastClickedIndex = 4
+                    onNavigateToCacheManage()
+                },
                 extraFocusRequester = itemRequesters[4],
                 onExitToNav = onExitToNav
             )
@@ -1726,11 +1876,6 @@ fun SettingsScreen(
     // 关于对话框：显示当前安装的版本号（versionName + versionCode），用于核对构建是否生效
     if (showAboutDialog) {
         AboutDialog(onDismiss = { showAboutDialog = false })
-    }
-
-    // 2.7 缓存管理对话框
-    if (showCacheDialog) {
-        CacheManageDialog(onDismiss = { showCacheDialog = false })
     }
 }
 
@@ -1796,14 +1941,27 @@ fun AboutDialog(onDismiss: () -> Unit) {
 }
 
 /**
- * 2.7 缓存管理对话框：展示音频/封面/歌词缓存大小，提供按分类与全部清理
+ * 2.8 缓存管理页（独立子页面，替代原 2.7 弹窗）
+ * 展示音频/封面/歌词缓存大小，提供按分类清理、全部清理，
+ * 以及「清除未收藏歌曲缓存」（仅保留已收藏歌曲，含未收藏歌单中的歌曲）。
+ * 2.8 优化：返回按钮固定在顶部（不随内容滚动，方向键稳定可达）；
+ * 操作按钮统一为小键盘键帽样式（与搜索页键盘一致）；返回按钮按「右键」可切到悬浮播放球。
  */
 @Composable
-fun CacheManageDialog(onDismiss: () -> Unit) {
+fun CacheManageScreen(
+    favorites: List<Favorite>,
+    onBack: () -> Unit,
+    // 2.8 返回按钮按「右键」→ 聚焦右上角悬浮播放球
+    onFocusFloatingBall: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     var audioSize by remember { mutableStateOf(0L) }
     var coverSize by remember { mutableStateOf(0L) }
     var lyricSize by remember { mutableStateOf(0L) }
+    // 操作结果提示（如「已清除未收藏歌曲缓存」）
+    var actionMessage by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
     // 计算缓存大小（IO 线程，目录文件多时避免卡主线程）
     suspend fun refreshSizes() {
@@ -1813,83 +1971,205 @@ fun CacheManageDialog(onDismiss: () -> Unit) {
             lyricSize = CacheManager.lyricCacheSize(context)
         }
     }
-
     LaunchedEffect(Unit) { refreshSizes() }
 
-    // 清理动作：清空对应分类后刷新大小
-    val scope = rememberCoroutineScope()
-    fun doClear(action: (Context) -> Unit) {
-        try { action(context) } catch (e: Exception) {}
-        scope.launch { refreshSizes() }
+    // 收藏 key 集合（格式 "平台key|歌曲id"，与音频缓存 key 前缀一致）
+    val favoriteKeys = remember(favorites) {
+        favorites.map { "${it.platform.key}|${it.musicId}" }.toSet()
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = LXSurfaceDialog,
-        title = { Text("缓存管理", fontSize = 20.sp, color = LXTextPrimary) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // 各分类缓存大小
-                CacheSizeRow(label = "音频缓存", bytes = audioSize, hint = "播放过的歌曲文件")
-                CacheSizeRow(label = "封面缓存", bytes = coverSize, hint = "歌曲/歌单封面图片")
-                CacheSizeRow(label = "歌词缓存", bytes = lyricSize, hint = "平台歌词文本")
-                Spacer(modifier = Modifier.height(4.dp))
-                // 清理按钮（可聚焦）
-//                Text(
-//                    text = "清理缓存后，对应内容下次使用时需重新联网获取",
-//                    fontSize = 12.sp,
-//                    color = LXTextSecondary
-//                )
+    // 清理动作：IO 线程执行 + 刷新大小 + 提示
+    fun doClear(label: String, action: (Context) -> Unit) {
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                try { action(context) } catch (e: Exception) {}
+                refreshSizes()
             }
-        },
-        confirmButton = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // 按分类清理
-                TextButton(onClick = { doClear { CacheManager.clearAudio(it) } }) {
-                    Text("清空音频", color = LXTextSecondary)
+            actionMessage = label
+        }
+    }
+
+    // 返回按钮初始焦点
+    val backFocusRequester = remember { FocusRequester() }
+    var initialFocusRequested by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        requestInitialFocus(
+            focusRequester = backFocusRequester,
+            attempted = { initialFocusRequested },
+            markAttempted = { initialFocusRequested = true }
+        )
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(LXSurfaceMain)
+    ) {
+        // 顶部氛围渐变叠加层
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(LXAccentGradientBrush)
+        )
+        Column(modifier = Modifier.fillMaxSize()) {
+            // 固定顶部导航栏（不在滚动区：方向键始终可达返回按钮）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 24.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .focusRequester(backFocusRequester)
+                        .lxBackButtonFocus()
+                        // 2.8 右键 → 聚焦右上角悬浮播放球
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionRight) {
+                                onFocusFloatingBall()
+                                true
+                            } else false
+                        }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "返回",
+                        tint = LXTextPrimary,
+                        modifier = Modifier.size(32.dp)
+                    )
                 }
-                TextButton(onClick = { doClear { CacheManager.clearCover(it) } }) {
-                    Text("清空封面", color = LXTextSecondary)
+                Spacer(modifier = Modifier.width(16.dp))
+                Text(
+                    text = "缓存管理",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LXTextPrimary
+                )
+            }
+
+            // 内容滚动区
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 每种缓存一张卡片：左侧信息 + 右侧「清除」键帽
+                item {
+                    CacheManageCard(
+                        label = "音频缓存",
+                        hint = "播放过的歌曲文件",
+                        bytes = audioSize,
+                        onClear = { doClear("已清空音频缓存") { CacheManager.clearAudio(it) } }
+                    )
                 }
-                TextButton(onClick = { doClear { CacheManager.clearLyric(it) } }) {
-                    Text("清空歌词", color = LXTextSecondary)
+                item {
+                    CacheManageCard(
+                        label = "封面缓存",
+                        hint = "歌曲/歌单封面图片",
+                        bytes = coverSize,
+                        onClear = { doClear("已清空封面缓存") { CacheManager.clearCover(it) } }
+                    )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                TextButton(onClick = { doClear { CacheManager.clearAll(it) } }) {
-                    Text("清空全部", color = LXPrimary)
+                item {
+                    CacheManageCard(
+                        label = "歌词缓存",
+                        hint = "平台歌词文本",
+                        bytes = lyricSize,
+                        onClear = { doClear("已清空歌词缓存") { CacheManager.clearLyric(it) } }
+                    )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                TextButton(onClick = onDismiss) {
-                    Text("关闭", color = LXTextSecondary)
+
+                // 底部操作区：清除未收藏缓存（主操作）+ 清除全部
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "清理后对应内容下次使用时需重新联网获取；收藏的歌曲缓存会保留",
+                            fontSize = 12.sp,
+                            color = LXTextSecondary
+                        )
+                        KeyboardKey(
+                            text = "清除未收藏缓存（仅保留已收藏）",
+                            onClick = {
+                                doClear("已清除未收藏歌曲的音频缓存") {
+                                    CacheManager.clearUnfavoritedAudio(it, favoriteKeys)
+                                }
+                            },
+                            highlighted = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        KeyboardKey(
+                            text = "清除全部",
+                            onClick = { doClear("已清空全部缓存") { CacheManager.clearAll(it) } },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        // 操作结果提示
+                        actionMessage?.let { msg ->
+                            Text(
+                                text = msg,
+                                fontSize = 13.sp,
+                                color = LXPrimary,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
                 }
             }
         }
-    )
+    }
 }
 
-/** 缓存大小展示行（标签 + 格式化大小） */
+/**
+ * 缓存管理卡片（2.8 卡片式布局）：左侧标签/大小/说明，右侧「清除」键帽按钮
+ */
 @Composable
-private fun CacheSizeRow(label: String, bytes: Long, hint: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-                color = LXTextPrimary
-            )
-            Text(
-                text = hint,
-                fontSize = 12.sp,
-                color = LXTextSecondary
+private fun CacheManageCard(
+    label: String,
+    hint: String,
+    bytes: Long,
+    onClear: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = LXCardDark),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LXOnCardDark
+                )
+                Text(
+                    text = hint,
+                    fontSize = 12.sp,
+                    color = LXOnCardDarkSecondary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = formatCacheSize(bytes),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LXPrimary
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            // 最右侧清除键帽（小键盘样式）
+            KeyboardKey(
+                text = "清除",
+                onClick = onClear,
+                modifier = Modifier.width(96.dp)
             )
         }
-        Text(
-            text = formatCacheSize(bytes),
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-            color = LXPrimary
-        )
     }
 }
 

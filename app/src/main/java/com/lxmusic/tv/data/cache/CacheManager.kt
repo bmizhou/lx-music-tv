@@ -111,6 +111,27 @@ object CacheManager {
         audioDir(context).listFiles()?.forEach { it.delete() }
     }
 
+    /**
+     * 清除「未收藏」歌曲的音频缓存（仅保留已收藏歌曲，2.8 缓存管理页用）。
+     * 遍历 SimpleCache 的缓存 key（格式 平台|歌曲id|音质），解析出「平台|歌曲id」前缀，
+     * 不在收藏集合（favoriteKeys，格式 "平台key|歌曲id"）中的删除。
+     */
+    fun clearUnfavoritedAudio(context: Context, favoriteKeys: Set<String>) {
+        try {
+            val cache = getAudioCache(context)
+            cache.keys.forEach { key ->
+                val parts = key.split("|")
+                // 仅处理「平台|歌曲id|音质」格式的歌曲维度 key（URL 兜底 key 不含该结构）
+                val prefix = if (parts.size >= 2) "${parts[0]}|${parts[1]}" else null
+                if (prefix != null && prefix !in favoriteKeys) {
+                    cache.removeResource(key)
+                }
+            }
+        } catch (e: Exception) {
+            // 遍历/删除异常忽略
+        }
+    }
+
     // ==================== 歌词缓存 ====================
 
     /** 命中返回歌词文本，未命中返回 null */

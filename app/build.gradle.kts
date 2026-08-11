@@ -14,30 +14,14 @@ android {
         applicationId = "com.lxmusic.tv"
         minSdk = 23
         targetSdk = 37
-        versionCode = 157
-        versionName = "2.8.202608101030"
+        versionCode = 166
+        versionName = "2.8.202608110130"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
     }
-
-//    buildTypes {
-//        release {
-//            // 保持关闭 R8 收缩/混淆：实测开启后（即便加 weapi/QuickJS keep 规则 + 换非优化 proguard 文件）
-//            // 仍会破坏 NeteaseWeApi 的 AES/RSA 加密，导致网易云排行榜 weapi 兜底失效、显示「暂不支持」。
-//            // TV 应用装机一次，17MB 完全可接受，稳定优先。
-//            isMinifyEnabled = false
-//            // 仅在 Release 打包时，强制只保留 arm64-v8a
-//            ndk {
-//                abiFilters.clear()
-//                abiFilters.add("arm64-v8a")
-//            }
-//            // 安全网：即便将来切回 minify，也已为 weapi/QuickJS 加密路径加 keep 规则
-//            //proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-//        }
-//    }
 
 //
     buildTypes {

@@ -1,5 +1,6 @@
 package com.lxmusic.tv
 
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -24,7 +25,10 @@ import kotlinx.coroutines.delay
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -35,6 +39,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import com.lxmusic.tv.presentation.component.lxBackButtonFocus
 import com.lxmusic.tv.presentation.component.RemoteImage
 import com.lxmusic.tv.presentation.screen.MainScreen
+import com.lxmusic.tv.presentation.screen.CacheManageScreen
 import com.lxmusic.tv.presentation.screen.PlayerScreen
 import com.lxmusic.tv.presentation.screen.SearchResultScreen
 import com.lxmusic.tv.presentation.screen.SourceManagementScreen
@@ -113,6 +118,10 @@ fun LXMusicApp() {
     val showFloatingBall = floatingCurrentSong != null &&
         currentRoute != null && currentRoute != "player" && currentRoute != "main"
 
+    // 2.8 悬浮球焦点请求器：子页面（播放源管理/缓存管理等）返回按钮按「右键」显式聚焦悬浮球
+    //（悬浮层不与内容区做空间焦点竞争，方向键自然导航到不了，需显式桥接）
+    val floatingBallRequester = remember { FocusRequester() }
+
     Box(modifier = Modifier.fillMaxSize()) {
     NavHost(
         navController = navController,
@@ -156,9 +165,13 @@ fun LXMusicApp() {
             // 返回键第一次按下（焦点在内容区）时递增，通知 MainScreen 聚焦选中 tab
             var navFocusRequestTick by remember { mutableIntStateOf(0) }
 
+            // 触屏设备（手机/平板）没有遥控器「焦点在侧栏」的语义，navBarHasFocus 不可靠：
+            // 直接弹退出确认框；仅 TV（LEANBACK）保留「先回 tab、再按才弹框」的两级逻辑
+            val isTvDevice = context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+
             // 首页返回键：焦点不在侧栏时第一次返回先回 tab（不弹窗），第二次才弹退出确认
             BackHandler {
-                if (navBarHasFocus) {
+                if (!isTvDevice || navBarHasFocus) {
                     showExitDialog = true
                 } else {
                     navFocusRequestTick++
@@ -218,6 +231,8 @@ fun LXMusicApp() {
                 onNavigateToSettings = { navController.navigate("main") },
                 onNavigateToSourceManagement = { navController.navigate("source_management") },
                 onNavigateToInterfaceSettings = { navController.navigate("interface_settings") },
+                // 2.8 缓存管理独立子页面
+                onNavigateToCacheManage = { navController.navigate("cache_manage") },
                 onNavigateToPlayer = {
                     // 有正在播放的歌曲时才允许进入播放页
                     if (viewModel.currentSong.value != null) {
@@ -396,10 +411,24 @@ fun LXMusicApp() {
                 onToggleSource = { sourceId, enabled -> viewModel.toggleSource(sourceId, enabled) },
                 onDeleteSource = { sourceId -> viewModel.deleteSource(sourceId) },
                 onBack = { navController.popBackStack() },
+                // 2.8 返回按钮按右键 → 聚焦右上角悬浮播放球
+                onFocusFloatingBall = { floatingBallRequester.requestFocus() },
                 onGetSourcePlatforms = { sourceId -> viewModel.getSourcePlatforms(sourceId) },
                 onSetSourcePlatforms = { sourceId, platforms ->
                     viewModel.setSourcePlatforms(sourceId, platforms)
                 }
+            )
+        }
+
+        // 2.8 缓存管理（独立子页面）
+        composable("cache_manage") {
+            val favorites by viewModel.favorites.collectAsState()
+            CacheManageScreen(
+                favorites = favorites,
+                onBack = { navController.popBackStack() },
+                // 2.8 返回按钮按右键 → 聚焦右上角悬浮播放球
+                onFocusFloatingBall = { floatingBallRequester.requestFocus() },
+                modifier = Modifier.fillMaxSize()
             )
         }
 
@@ -460,25 +489,27 @@ fun LXMusicApp() {
 
         // 悬浮「正在播放」按钮：非播放页且有歌曲播放时显示（含首页），点击进入播放页。
         // 置于右上角；搜索结果页的「歌曲/歌单」切换按钮已左移为其让位（见 SearchResultScreen）。
-        AnimatedVisibility(
-            visible = showFloatingBall,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 20.dp, end = 20.dp)
-        ) {
-        FloatingNowPlayingButton(
-            coverUrl = floatingCurrentSong?.picUrl,
-            isPlaying = floatingIsPlaying,
-            onClick = { navController.navigate("player") }
-        )
-    }
+        // 2.8 用 if 而非 AnimatedVisibility：动画过渡层曾导致方向键焦点无法切入该悬浮按钮
+        if (showFloatingBall) {
+            FloatingNowPlayingButton(
+                coverUrl = floatingCurrentSong?.picUrl,
+                isPlaying = floatingIsPlaying,
+                onClick = { navController.navigate("player") },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 20.dp, end = 20.dp)
+                    // 2.8 供子页面「返回按钮按右键」显式聚焦
+                    .focusRequester(floatingBallRequester)
+            )
+        }
     }
 }
 
 /**
  * 悬浮「正在播放」按钮（仿菠萝音乐的播放浮球）
  * 仅在有歌曲播放、且不在播放页时出现（首页也会显示）；点击跳转播放页。
- * 圆形浮球显示正在播放歌曲封面，右下角小标显示播放/暂停状态。
+ * 圆形浮球显示正在播放歌曲封面，2.8 取消右下角播放/暂停小标，
+ * 封面改为随播放状态旋转：播放中匀速旋转（1.2s/圈），暂停停止并归 0。
  */
 @Composable
 fun FloatingNowPlayingButton(
@@ -488,6 +519,21 @@ fun FloatingNowPlayingButton(
     modifier: Modifier = Modifier
 ) {
     // 仿菠萝音乐：圆形浮球显示正在播放歌曲封面，点击进入播放页
+    // 2.8 封面旋转动画：播放中缓慢旋转（8s/圈），暂停停止并平滑归 0
+    val coverRotation = remember { Animatable(0f) }
+    LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            while (true) {
+                coverRotation.animateTo(
+                    coverRotation.value + 360f,
+                    animationSpec = tween(durationMillis = 8000, easing = LinearEasing)
+                )
+            }
+        } else {
+            coverRotation.animateTo(0f, animationSpec = tween(durationMillis = 300))
+        }
+    }
+
     IconButton(
         onClick = onClick,
         modifier = modifier
@@ -504,7 +550,10 @@ fun FloatingNowPlayingButton(
                 RemoteImage(
                     url = coverUrl,
                     contentDescription = "正在播放，点击进入播放页",
-                    modifier = Modifier.fillMaxSize().clip(CircleShape),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .graphicsLayer { rotationZ = coverRotation.value },
                     contentScale = ContentScale.Crop,
                     placeholder = {
                         Icon(
@@ -521,21 +570,6 @@ fun FloatingNowPlayingButton(
                     contentDescription = "正在播放，点击进入播放页",
                     tint = Color.White,
                     modifier = Modifier.size(28.dp)
-                )
-            }
-            // 播放/暂停状态小标（右下角）
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .size(20.dp)
-                    .background(Color(0xB3000000), CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(12.dp)
                 )
             }
         }

@@ -19,6 +19,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -58,6 +63,8 @@ fun SourceManagementScreen(
     onToggleSource: (String, Boolean) -> Unit,
     onDeleteSource: (String) -> Unit,
     onBack: () -> Unit,
+    // 2.8 返回按钮按「右键」→ 聚焦右上角悬浮播放球（悬浮层空间焦点导航不可达，需显式桥接）
+    onFocusFloatingBall: () -> Unit = {},
     onGetSourcePlatforms: (String) -> Set<String> = { emptySet() },
     onSetSourcePlatforms: (String, Set<String>) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
@@ -117,6 +124,13 @@ fun SourceManagementScreen(
                             // focusRequester 必须在 focusable(IconButton) 之前
                             .focusRequester(backFocusRequester)
                             .lxBackButtonFocus()
+                            // 2.8 右键 → 聚焦右上角悬浮播放球
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionRight) {
+                                    onFocusFloatingBall()
+                                    true
+                                } else false
+                            }
                     ) {
                     Icon(
                         imageVector = Icons.Default.ArrowBack,
@@ -278,7 +292,8 @@ fun ServerStatusCard(
                     Text(
                         text = serverUrl,
                         fontSize = 14.sp,
-                        color = LXPrimary,
+                        // 2.8 不跟随主题色：与播放源卡片二级标题同色（深卡片上的次级文字）
+                        color = LXOnCardDarkSecondary,
                         modifier = Modifier.weight(1f)
                     )
                     Icon(
