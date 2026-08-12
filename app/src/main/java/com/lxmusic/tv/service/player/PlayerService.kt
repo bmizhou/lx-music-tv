@@ -18,6 +18,7 @@ import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
+import com.google.android.exoplayer2.analytics.AnalyticsListener
 import com.google.android.exoplayer2.ext.okhttp.OkHttpDataSource
 import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.upstream.DataSource
@@ -25,6 +26,7 @@ import com.google.android.exoplayer2.upstream.DataSpec
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
 import com.google.android.exoplayer2.upstream.cache.CacheDataSource
 import com.lxmusic.tv.data.cache.CacheManager
+import com.lxmusic.tv.data.model.AudioQuality
 import com.google.android.exoplayer2.upstream.TransferListener
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -74,6 +76,40 @@ class PlayerService : Service() {
         fun onPlaybackStateChanged(isPlaying: Boolean)
         fun onPositionChanged(position: Long, duration: Long)
         fun onPlaybackCompleted()
+        // 2.8 实际播放音质（ExoPlayer 解析出的真实音频格式，映射后回调；播放页展示真实音质）
+        fun onAudioFormatChanged(quality: AudioQuality)
+        // 2.8 播放出错（坏 URL/网络错误等）：VM 据此清 URL 缓存并自动重试一次
+        fun onPlaybackError()
+    }
+
+    /**
+     * 2.8 将 ExoPlayer 解析出的真实音频格式映射为音质档位
+     * @param codecs 编码器字符串（可能为 null；如 "mp3"/"flac"/"aac"）
+     * @param mimeType 采样 MIME 类型（如 "audio/mpeg"/"audio/flac"/"audio/mp4"）
+     * @param bitrate 比特率（bps，可能为 -1/0 未知）
+     * @param sampleRate 采样率（Hz，可能为 -1/0 未知）
+     */
+    private fun mapFormatToQuality(
+        codecs: String?,
+        mimeType: String?,
+        bitrate: Int,
+        sampleRate: Int
+    ): AudioQuality? {
+        // codecs 可能为空（部分源未填充），用 sampleMimeType 兜底判断格式
+        val fmt = (codecs ?: "").lowercase() + " " + (mimeType ?: "").lowercase()
+        Log.d(TAG, "[mapFormat] codecs=$codecs mime=$mimeType bitrate=$bitrate sampleRate=$sampleRate fmt=$fmt")
+        return when {
+            "flac" in fmt ->
+                if (sampleRate >= 96000) AudioQuality.FLAC_24BIT else AudioQuality.FLAC
+            "mpeg" in fmt ->
+                if (bitrate >= 320_000) AudioQuality.QUALITY_320K else AudioQuality.QUALITY_128K
+            "aac" in fmt || "mp4a" in fmt || "mp4" in fmt ->
+                if (bitrate >= 320_000) AudioQuality.QUALITY_320K else AudioQuality.QUALITY_128K
+            else -> {
+                Log.w(TAG, "[mapFormat] 未知音频格式: codecs=$codecs mime=$mimeType")
+                null
+            }
+        }
     }
 
     private var currentPosition: Long = 0
@@ -212,6 +248,26 @@ class PlayerService : Service() {
             .setMediaSourceFactory(DefaultMediaSourceFactory(cacheDataSourceFactory))
             .build()
             .apply {
+                // 2.8 真实音频格式监听：2.19 起 Player.Listener 已无 onAudioInputFormatChanged，
+                // 该回调位于 AnalyticsListener（2.x 全版本存在）；播放时解析出真实格式 → 映射音质 → 回调 VM
+                addAnalyticsListener(object : AnalyticsListener {
+                    override fun onAudioInputFormatChanged(
+                        eventTime: AnalyticsListener.EventTime,
+                        format: com.google.android.exoplayer2.Format
+                    ) {
+                        Log.d(TAG, "[音频格式] codecs=${format.codecs} mime=${format.sampleMimeType} bitrate=${format.bitrate} sampleRate=${format.sampleRate}")
+                        val quality = mapFormatToQuality(
+                            format.codecs,
+                            format.sampleMimeType,
+                            format.bitrate,
+                            format.sampleRate
+                        )
+                        if (quality != null) {
+                            Log.i(TAG, "实际音质: ${quality.displayName}")
+                            stateListener?.onAudioFormatChanged(quality)
+                        }
+                    }
+                })
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         when (playbackState) {
@@ -241,7 +297,11 @@ class PlayerService : Service() {
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
-                        Log.e(TAG, "播放错误: ${error.message}")
+                        Log.e(TAG, "播放错误: ${error.message}, errorCode=${error.errorCodeName}")
+                        // 2.8 播放出错（坏 URL/403/无效直链等）：清掉当前歌曲的 URL 缓存，
+                        // 防止污染缓存被后续播放命中（换源后收藏页播放失败问题）；并回调 VM 自动重试
+                        currentCacheKey?.let { CacheManager.removeUrl(it) }
+                        stateListener?.onPlaybackError()
                     }
                 })
             }

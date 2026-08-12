@@ -133,6 +133,8 @@ fun LXMusicApp() {
             val isPlaying by viewModel.isPlaying.collectAsState()
             val defaultPlatform by viewModel.defaultPlatform.collectAsState()
             val preferredQuality by viewModel.preferredQuality.collectAsState()
+            // 2.8 歌词设置：是否显示翻译歌词
+            val lyricTranslationEnabled by viewModel.lyricTranslationEnabled.collectAsState()
             val browseItems by viewModel.browseItems.collectAsState()
             val browseSongs by viewModel.browseSongs.collectAsState()
             val browseLoading by viewModel.browseLoading.collectAsState()
@@ -246,6 +248,9 @@ fun LXMusicApp() {
                 onDefaultPlatformChange = { viewModel.setDefaultPlatform(it) },
                 preferredQuality = preferredQuality,
                 onPreferredQualityChange = { viewModel.setPreferredQuality(it) },
+                // 2.8 歌词设置：是否显示翻译歌词
+                lyricTranslationEnabled = lyricTranslationEnabled,
+                onLyricTranslationEnabledChange = { viewModel.setLyricTranslationEnabled(it) },
                 browseItems = browseItems,
                 browseSongs = browseSongs,
                 browseLoading = browseLoading,
@@ -438,6 +443,11 @@ fun LXMusicApp() {
             val progress by viewModel.progress.collectAsState()
             val duration by viewModel.duration.collectAsState()
             val currentLyric by viewModel.currentLyric.collectAsState()
+            // 2.8 翻译歌词 + 显示开关
+            val currentLyricTranslation by viewModel.currentLyricTranslation.collectAsState()
+            val lyricTranslationEnabled by viewModel.lyricTranslationEnabled.collectAsState()
+            // 2.8 实际播放音质
+            val currentPlayQuality by viewModel.currentPlayQuality.collectAsState()
             val playMode by viewModel.playMode.collectAsState()
             val playlist by viewModel.playlist.collectAsState()
             val favoriteSongIds by viewModel.favoriteSongIds.collectAsState()
@@ -460,6 +470,11 @@ fun LXMusicApp() {
                 progress = progress,
                 totalDurationMs = duration,
                 currentLyric = currentLyric,
+                // 2.8 翻译歌词 + 开关
+                currentLyricTranslation = currentLyricTranslation,
+                lyricTranslationEnabled = lyricTranslationEnabled,
+                // 2.8 实际播放音质
+                currentPlayQuality = currentPlayQuality,
                 playlist = playlist,
                 playMode = playMode,
                 isFavorite = currentSong?.let { favoriteSongIds.contains(it.id) } ?: false,

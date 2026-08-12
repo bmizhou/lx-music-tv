@@ -1,5 +1,6 @@
 package com.lxmusic.tv.network
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
@@ -32,10 +33,16 @@ class HttpClient(
 ) {
     
     companion object {
+        private const val TAG = "HttpClient"
         // 全部平台接口统一 5s 超时（JS 源播放链路 lx.request 走独立长超时，见 JavaScriptEngine）
         private const val CONNECT_TIMEOUT = 5000
         private const val READ_TIMEOUT = 5000
         private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        // 2.8 响应体大小上限（32MB）：本客户端只服务 JSON 接口（搜索/歌词/URL 解析，正常均 KB 级）；
+        // JS 源请求可能被接口异常返回音频流（实测 metingapi br=999 返回 ~55MB FLAC 流），
+        // 无条件 readBytes 转 String 会 OOM 崩溃。播放音频走 ExoPlayer 流式下载（CacheDataSource），
+        // 不经本客户端，高音质播放不受此上限影响。
+        private const val MAX_RESPONSE_BYTES = 32 * 1024 * 1024
     }
     
     /**
@@ -213,7 +220,40 @@ class HttpClient(
             connection.errorStream
         } ?: return ""
 
-        val bytes = inputStream.use { it.readBytes() }
+        // 2.8 预检：Content-Length 超限或音频/视频流 → 直接放弃读取（JS 源期望 JSON URL，流无意义且省内存）
+        runCatching {
+            val contentLength = connection.contentLength
+            if (contentLength > MAX_RESPONSE_BYTES) {
+                Log.w(TAG, "响应 Content-Length=${contentLength}B 超过 ${MAX_RESPONSE_BYTES / 1024 / 1024}MB 上限，放弃读取: ${connection.url}")
+                return ""
+            }
+            val contentType = connection.contentType ?: ""
+            if (contentType.startsWith("audio/") || contentType.startsWith("video/")) {
+                Log.w(TAG, "响应为媒体流（$contentType），非 JSON 接口，放弃读取: ${connection.url}")
+                return ""
+            }
+        }
+
+        // 2.8 流式读取 + 上限截断（防接口异常返回超大 body 导致 OOM）；
+        // 宁可返回截断内容（解析失败、源切换兜底），也不崩溃。
+        val bytes = inputStream.use { stream ->
+            val buffer = java.io.ByteArrayOutputStream()
+            val chunk = ByteArray(16 * 1024)
+            var total = 0
+            while (true) {
+                val n = stream.read(chunk)
+                if (n < 0) break
+                if (total + n > MAX_RESPONSE_BYTES) {
+                    Log.w(TAG, "响应体超过 ${MAX_RESPONSE_BYTES / 1024 / 1024}MB 上限已截断: ${connection.url}")
+                    val remain = (MAX_RESPONSE_BYTES - total).coerceAtLeast(0)
+                    if (remain > 0) buffer.write(chunk, 0, remain)
+                    break
+                }
+                buffer.write(chunk, 0, n)
+                total += n
+            }
+            buffer.toByteArray()
+        }
         return decodeBody(bytes)
     }
 

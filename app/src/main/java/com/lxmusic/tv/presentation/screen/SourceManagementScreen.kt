@@ -552,37 +552,52 @@ fun PlatformConfigDialog(
                 ) {
                     platforms.forEach { (key, name) ->
                         val isChecked = selected.contains(key)
-                        Card(
+                        // 2.8 样式对齐默认音乐平台弹窗（PlatformSelectDialog）：选中=浅红填充+加粗+右侧勾选，
+                        // 未选中=透明；lxSelectorFocus 焦点样式（无发光无动画，避免密集列表切换鬼畜）
+                        Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 3.dp)
+                                .lxSelectorFocus(shape = RoundedCornerShape(8.dp), glow = false, animated = false)
                                 .clickable {
                                     selected = if (isChecked) selected - key else selected + key
-                                }
-                                .lxFocusBorder(shape = RoundedCornerShape(8.dp)),
-                            colors = CardDefaults.cardColors(
-                                // 2.5 浅色主题：选中=浅红填充，未选中=浅灰表面，均不含常驻边框
-                                containerColor = if (isChecked) LXPrimary.copy(alpha = 0.15f) else LXSurfaceVariant
-                            ),
+                                },
+                            color = if (isChecked) LXPrimary.copy(alpha = 0.12f) else Color.Transparent,
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                // 平台品牌图标（与默认音乐平台弹窗一致）
+                                val platform = try {
+                                    MusicPlatform.valueOf(key.uppercase())
+                                } catch (e: Exception) {
+                                    MusicPlatform.KW
+                                }
                                 Icon(
-                                    imageVector = if (isChecked) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                    imageVector = platformIcon(platform),
                                     contentDescription = null,
-                                    tint = if (isChecked) LXPrimary else LXTextSecondary,
-                                    modifier = Modifier.size(22.dp)
+                                    tint = platformBrandColor(platform),
+                                    modifier = Modifier.size(20.dp)
                                 )
-                                Spacer(modifier = Modifier.width(12.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
                                 Text(
                                     text = name,
                                     fontSize = 16.sp,
-                                    // 2.5 浅色主题：白底深色文字
+                                    fontWeight = if (isChecked) FontWeight.Bold else FontWeight.Normal,
                                     color = LXTextPrimary
                                 )
+                                // 选中项右侧勾选
+                                if (isChecked) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = LXPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -590,28 +605,22 @@ fun PlatformConfigDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // 操作按钮
+                // 操作按钮（2.8 与主页「退出应用」弹窗样式统一：无背景文本按钮，红字/普通字区分主次）
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Button(
+                    TextButton(
                         onClick = onDismiss,
-                        modifier = Modifier.weight(1f),
-                        // 2.5 浅色主题：浅灰底 + 深色文字
-                        colors = ButtonDefaults.buttonColors(containerColor = LXSurfaceVariant, contentColor = LXTextPrimary),
-                        shape = RoundedCornerShape(8.dp)
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Text(text = "取消", fontSize = 15.sp)
+                        Text(text = "取消", fontSize = 15.sp, color = LXTextPrimary)
                     }
-                    Button(
+                    TextButton(
                         onClick = { onConfirm(selected) },
-                        modifier = Modifier.weight(1f),
-                        // 2.5 浅色主题：品牌红按钮（白字）
-                        colors = ButtonDefaults.buttonColors(containerColor = LXPrimary, contentColor = Color.White),
-                        shape = RoundedCornerShape(8.dp)
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Text(text = "保存", fontSize = 15.sp)
+                        Text(text = "保存", fontSize = 15.sp, color = LXPrimary)
                     }
                 }
             }
@@ -667,15 +676,16 @@ fun DeleteConfirmDialog(
         title = { Text(text = "确认删除", fontWeight = FontWeight.Bold) },
         text = { Text("确定要删除播放源 \"$sourceName\" 吗？") },
         confirmButton = {
-            Button(
-                onClick = onConfirm,
-                colors = ButtonDefaults.buttonColors(containerColor = LXPrimary)
-            ) {
-                Text("删除")
+            // 2.8 与主页「退出应用」弹窗按钮样式统一：无背景文本按钮，红字醒目
+            TextButton(onClick = onConfirm) {
+                Text("删除", color = LXPrimary)
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss) { Text("取消") }
+            // 取消：与「后台播放」一致的无背景文本按钮
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = LXTextPrimary)
+            }
         },
         // 2.5 浅色主题：灰白底对话框（LXSurfaceDialog #F0F0F2）+ 深色文字
         containerColor = LXSurfaceDialog,

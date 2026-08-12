@@ -58,6 +58,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.activity.compose.BackHandler
 import android.widget.Toast
+import com.lxmusic.tv.data.model.AudioQuality
 import com.lxmusic.tv.data.model.MusicPlatform
 import com.lxmusic.tv.data.model.PlayMode
 import com.lxmusic.tv.data.model.Song
@@ -105,6 +106,11 @@ fun PlayerScreen(
     progress: Float,
     totalDurationMs: Long = 0L,
     currentLyric: String? = null,
+    // 2.8 翻译歌词 + 是否显示开关（设置页歌词设置）
+    currentLyricTranslation: String? = null,
+    lyricTranslationEnabled: Boolean = true,
+    // 2.8 当前实际播放音质（降级重试后的真实音质；null 表示未知/未播放）
+    currentPlayQuality: AudioQuality? = null,
     playlist: List<Song> = emptyList(),
     playMode: PlayMode = PlayMode.SEQUENCE,
     isFavorite: Boolean = false,
@@ -307,6 +313,10 @@ fun PlayerScreen(
             PlayerMainContent(
                 currentSong = currentSong,
                 currentLyric = currentLyric,
+                // 2.8 翻译歌词透传（开关开启且有翻译时）
+                currentLyricTranslation = if (lyricTranslationEnabled) currentLyricTranslation else null,
+                // 2.8 实际播放音质
+                currentPlayQuality = currentPlayQuality,
                 progress = progress,
                 totalDurationMs = totalDurationMs,
                 focusRequester = mainFocusRequester,
@@ -416,6 +426,10 @@ private fun GlassBackground(currentSong: Song?) {
 private fun PlayerMainContent(
     currentSong: Song?,
     currentLyric: String?,
+    // 2.8 翻译歌词（开关已过滤，null 表示不显示）
+    currentLyricTranslation: String? = null,
+    // 2.8 当前实际播放音质（真实音质，非设置偏好）
+    currentPlayQuality: AudioQuality? = null,
     progress: Float,
     totalDurationMs: Long,
     focusRequester: FocusRequester,
@@ -459,12 +473,33 @@ private fun PlayerMainContent(
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center
             )
+            // 2.8 歌手下方显示当前真实播放音质（ExoPlayer 解析；解析前/未知格式显示「未知」）
+            if (currentSong != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = currentPlayQuality?.let {
+                        when (it) {
+                            AudioQuality.QUALITY_128K -> "标准 128K"
+                            AudioQuality.QUALITY_320K -> "高品质 320K"
+                            AudioQuality.FLAC -> "无损 flac"
+                            AudioQuality.FLAC_24BIT -> "Hi-Res flac24bit"
+                        }
+                    } ?: "未知",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White.copy(alpha = 0.5f),
+                    letterSpacing = 2.sp,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center
+                )
+            }
         }
 
-        // 右侧：歌词
+        // 右侧：歌词（2.8 翻译歌词：开关已在 PlayerScreen 层过滤，null 表示不显示）
         LyricPanel(
             currentSong = currentSong,
             lyric = currentLyric,
+            translation = currentLyricTranslation,
             currentTimeMs = (progress * totalDurationMs).toLong(),
             modifier = Modifier.weight(0.58f).fillMaxHeight().padding(vertical = 24.dp)
         )
@@ -1379,6 +1414,8 @@ private fun GlassAlbumCover(
 private fun LyricPanel(
     currentSong: Song?,
     lyric: String?,
+    // 2.8 翻译歌词（设置页开关控制是否传入；null 表示无翻译或已关闭）
+    translation: String? = null,
     currentTimeMs: Long,
     modifier: Modifier = Modifier
 ) {
@@ -1386,7 +1423,7 @@ private fun LyricPanel(
         modifier = modifier,
         contentAlignment = Alignment.Center
     ) {
-        val lyrics = remember(lyric) { parseLrc(lyric) }
+        val lyrics = remember(lyric, translation) { parseLrcWithTranslation(lyric, translation) }
         if (lyrics.isEmpty()) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
@@ -1435,23 +1472,38 @@ private fun ScrollingLyrics(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        itemsIndexed(lyrics, key = { _, line -> line.timeMs }) { _, line ->
+        // key 用索引：歌词中可能存在多条同时间戳的行（如多行 [00:00.00]），
+        // 用 timeMs 做 key 会重复抛 IllegalArgumentException（v168 日语歌实测闪退）
+        itemsIndexed(lyrics, key = { index, _ -> index }) { _, line ->
             val isCurrent = line.timeMs == lyrics.getOrNull(currentIndex)?.timeMs
-            Text(
-                text = line.text.ifBlank { "♪" },
-                fontSize = if (isCurrent) 22.sp else 16.sp,
-                color = if (isCurrent) Color.White else Color.White.copy(alpha = 0.45f),
-                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-            )
+            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Text(
+                    text = line.text.ifBlank { "♪" },
+                    fontSize = if (isCurrent) 22.sp else 16.sp,
+                    color = if (isCurrent) Color.White else Color.White.copy(alpha = 0.45f),
+                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                // 2.8 翻译歌词（当前行高亮时同步加粗加亮，其余行次级白）
+                line.translation?.takeIf { it.isNotBlank() }?.let { trans ->
+                    Text(
+                        text = trans,
+                        fontSize = if (isCurrent) 14.sp else 12.sp,
+                        color = if (isCurrent) Color.White.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.32f),
+                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
         }
     }
 }
 
-/** 歌词行 */
-data class LyricLine(val timeMs: Long, val text: String)
+/** 歌词行（2.8 增加 translation：翻译歌词，设置页可开关） */
+data class LyricLine(val timeMs: Long, val text: String, val translation: String? = null)
 
 /** 解析 LRC 歌词 */
 fun parseLrc(lrc: String?): List<LyricLine> {
@@ -1477,6 +1529,28 @@ fun parseLrc(lrc: String?): List<LyricLine> {
         }
     }
     return lines.sortedBy { it.timeMs }
+}
+
+/**
+ * 2.8 解析带翻译的歌词：主歌词 + 翻译歌词按时间戳合并
+ * @param translationLrc 翻译歌词（LRC）；为空时等价于 [parseLrc]
+ * 注意：网易云等平台原文与翻译时间戳常有毫秒级差异（如 [00:12.34] vs [00:12.36]），
+ * 不能精确相等匹配——对每个原文行找「时间差 ≤ 600ms 的最近翻译行」，否则当前行翻译会漏配。
+ */
+fun parseLrcWithTranslation(lrc: String?, translationLrc: String?): List<LyricLine> {
+    if (translationLrc.isNullOrBlank()) return parseLrc(lrc)
+    val mainLines = parseLrc(lrc)
+    val translationLines = parseLrc(translationLrc)
+    if (mainLines.isEmpty() || translationLines.isEmpty()) return mainLines
+    // 容差窗口 ±600ms（歌词行级毫秒差异的常见范围）
+    val tolerance = 600L
+    return mainLines.map { line ->
+        val trans = translationLines
+            .filter { it.timeMs in (line.timeMs - tolerance)..(line.timeMs + tolerance) }
+            .minByOrNull { kotlin.math.abs(it.timeMs - line.timeMs) }
+            ?.text
+        line.copy(translation = trans)
+    }
 }
 
 /** 格式化时间（毫秒） */

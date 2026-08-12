@@ -169,19 +169,25 @@ class NeteaseApi(
     }
 
     /**
-     * 获取歌词
+     * 获取歌词（2.8 增加翻译：tv=1 拉取 tlyric，返回统一 JSON {lyric, tlyric} 供 MusicSearchService 解析）
      * @param songId 网易云歌曲ID
-     * @return LRC格式歌词
+     * @return JSON 字符串 {lyric, tlyric}（洛雪歌词协议字段名）；失败返回 null
      */
     suspend fun getLyric(songId: String): String? = withContext(Dispatchers.IO) {
         try {
-            val url = "https://music.163.com/api/song/lyric?id=$songId&lv=1"
-            
+            // lv=1 原文 + tv=1 翻译（实测可用）
+            val url = "https://music.163.com/api/song/lyric?id=$songId&lv=1&tv=1"
+
             val response = httpClient.get(url)
             if (response.isSuccess) {
                 val json = parseToObj(response.body)
-                val lrc = json.optJSONObject("lrc") ?: JsonObject(emptyMap())
-                lrc.optStr("lyric")
+                val lrc = json.optJSONObject("lrc")?.optStr("lyric").orEmpty()
+                val tlyric = json.optJSONObject("tlyric")?.optStr("lyric").orEmpty()
+                // 构造统一 JSON（构造请求体用 org.json，无重复 key 安全）
+                org.json.JSONObject()
+                    .put("lyric", lrc)
+                    .apply { if (tlyric.isNotEmpty()) put("tlyric", tlyric) }
+                    .toString()
             } else {
                 null
             }

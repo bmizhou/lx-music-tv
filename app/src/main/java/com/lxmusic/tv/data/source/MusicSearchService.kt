@@ -337,96 +337,72 @@ class MusicSearchService(
     }
 
     /**
-     * 获取音乐播放URL
-     * 先尝试通过自定义源获取，如果失败则使用内置API
+     * 获取音乐播放URL（2.8 音质交由源自行处理，不做应用层降级重试）
+     * 仅按请求音质单次尝试（按优先级遍历 JS 源），
+     * 避免逐级降级重试把网络超时放大 N 倍（如 8s × 4 级 = 32s）。
+     * 是否降级/实际音质由 JS 源脚本内部决定（洛雪协议行为），应用记录请求成功的音质。
+     * @param excludeSourceIds 本轮播放尝试中已失败的源 id 集合：这些源返回的 URL 已被实测无法播放（403 等），
+     * 本轮按顺序继续尝试下一个源时跳过它们（下次播放重新按顺序从头尝试）
      */
     suspend fun getMusicUrl(
         song: Song,
-        quality: AudioQuality = AudioQuality.QUALITY_320K
-    ): ApiResponse<String> = withContext(Dispatchers.IO) {
+        quality: AudioQuality = AudioQuality.QUALITY_320K,
+        excludeSourceIds: Set<String> = emptySet()
+    ): ApiResponse<MusicPlayResult> = withContext(Dispatchers.IO) {
         try {
-            // 2.7 播放 URL 短期缓存：命中直接返回，免重复请求解析接口（缓解 QQ 等平台按请求频率风控）
-            val urlCacheKey = CacheManager.urlKey(song, quality)
-            CacheManager.getUrl(urlCacheKey)?.let { cached ->
-                if (cached.isNotEmpty()) {
-                    return@withContext ApiResponse.success(cached)
-                }
+            val result = tryFetchUrlOnce(song, quality, excludeSourceIds)
+            if (result != null) {
+                ApiResponse.success(result)
+            } else {
+                ApiResponse.error("获取播放URL失败: 没有可用的播放源")
             }
-
-            // 方案1：按优先级遍历启用的 JS 源（先启用/先加载的优先级最高），
-            // 当前源获取失败时自动切换到下一个源尝试（传入 source.id，逐个真正尝试）
-            val sourceCode = song.platform.key
-            for (source in sourceManager.getSourcesForPlatform(sourceCode)) {
-                // 传入歌曲真实平台代码（kw/kg/tx/wy/mg），确保 JS 源用正确的平台请求播放地址
-                val result = sourceManager.getMusicUrlWithSource(song.id, quality, sourceCode, source.id)
-                when (result) {
-                    is SourceExecutionResult.UrlSuccess -> {
-                        if (result.url.isNotEmpty()) {
-                            CacheManager.putUrl(urlCacheKey, result.url)
-                            return@withContext ApiResponse.success(result.url)
-                        }
-                    }
-                    is SourceExecutionResult.Error -> {
-                        Log.w(TAG, "JS源[${source.name}]获取URL失败，尝试下一个源: ${result.message}")
-                    }
-                    else -> {}
-                }
-            }
-
-            // 方案2：使用内置API获取播放URL
-            Log.d(TAG, "使用内置${song.platform.displayName}API获取播放URL: ${song.id}")
-            
-            val url = when (song.platform) {
-                MusicPlatform.KW -> {
-                    val qualityStr = when (quality) {
-                        AudioQuality.QUALITY_128K -> "128k"
-                        AudioQuality.QUALITY_320K -> "320k"
-                        AudioQuality.FLAC -> "flac"
-                        AudioQuality.FLAC_24BIT -> "flac24bit"
-                        else -> "320k"
-                    }
-                    kuwoApi.getMusicUrl(song.id, qualityStr)
-                }
-                MusicPlatform.KG -> {
-                    // 酷狗需要hash和albumId，从song.id中获取
-                    val parts = song.id.split("_")
-                    if (parts.size >= 2) {
-                        kugouApi.getMusicUrl(parts[0], parts[1])
-                    } else {
-                        null
-                    }
-                }
-                MusicPlatform.TX -> {
-                    // QQ音乐需要songMid和mediaMid
-                    val parts = song.id.split("_")
-                    if (parts.size >= 2) {
-                        qqMusicApi.getMusicUrl(parts[0], parts[1])
-                    } else {
-                        null
-                    }
-                }
-                MusicPlatform.WY -> {
-                    neteaseApi.getMusicUrl(song.id)
-                }
-                MusicPlatform.MG -> {
-                    // 咪咕音乐暂未实现
-                    null
-                }
-                MusicPlatform.LOCAL -> {
-                    null
-                }
-            }
-
-            if (!url.isNullOrEmpty()) {
-                CacheManager.putUrl(urlCacheKey, url)
-                return@withContext ApiResponse.success(url)
-            }
-
-            ApiResponse.error("获取播放URL失败: 没有可用的播放源")
         } catch (e: Exception) {
             Log.e(TAG, "获取播放URL异常", e)
             ApiResponse.error("获取播放URL失败: ${e.message}")
         }
+    }
+
+    /**
+     * 单次音质尝试：按优先级遍历 JS 源（2.8 取消内置 API 播放兜底）
+     * @return 播放结果（URL + 来源源 id）；JS 源全部失败返回 null
+     */
+    private suspend fun tryFetchUrlOnce(
+        song: Song,
+        quality: AudioQuality,
+        excludeSourceIds: Set<String>
+    ): MusicPlayResult? {
+        // 2.8 不缓存播放 URL：签名直链/防盗链 URL 有时效（可能数小时即失效），
+        // 缓存 URL 会在过期后仍被命中导致播放失败。每次播放都重新解析拿新 URL；
+        // 音频流数据由 ExoPlayer SimpleCache（CacheDataSource）按 URL 缓存，播放时自动边播边缓存。
+        // 2.8 播放 URL 只走 JS 源：内置 API 直链不稳定（无 cookie/防盗链易 403、flac 直链常失效），
+        // 且 JS 源失败时用官方 API 兜底可能拿到坏 URL 导致播放卡 0。JS 源全部失败即播放失败。
+
+        // 按优先级遍历启用的 JS 源（先启用/先加载的优先级最高），
+        // 当前源获取失败时自动切换到下一个源尝试（传入 source.id，逐个真正尝试）
+        val sourceCode = song.platform.key
+        for (source in sourceManager.getSourcesForPlatform(sourceCode)) {
+            // 跳过本轮已失败的源：上次该源返回的 URL 实际无法播放（403/404 等），
+            // 本轮继续按顺序尝试下一个源时不再试它，避免卡在同一个坏 URL 上；
+            // 失败集合仅本轮有效，下次播放重新按顺序从头尝试
+            if (source.id in excludeSourceIds) {
+                Log.w(TAG, "跳过播放失败过的源[${source.name}]")
+                continue
+            }
+            // 传入歌曲真实平台代码（kw/kg/tx/wy/mg），确保 JS 源用正确的平台请求播放地址
+            val result = sourceManager.getMusicUrlWithSource(song.id, quality, sourceCode, source.id)
+            when (result) {
+                is SourceExecutionResult.UrlSuccess -> {
+                    if (result.url.isNotEmpty()) {
+                        return MusicPlayResult(result.url, quality, source.id)
+                    }
+                }
+                is SourceExecutionResult.Error -> {
+                    Log.w(TAG, "JS源[${source.name}]获取URL失败，尝试下一个源: ${result.message}")
+                }
+                else -> {}
+            }
+        }
+        return null
     }
 
     /**
@@ -655,3 +631,13 @@ private fun MusicItem.toSong(): Song {
         quality = listOf(AudioQuality.QUALITY_128K, AudioQuality.QUALITY_320K, AudioQuality.FLAC)
     )
 }
+
+/**
+ * 2.8 播放结果：URL + 实际播放音质 + 来源播放源 id。
+ * sourceId 用于播放失败后把该源加入黑名单，重试时跳过它尝试下一个源
+ */
+data class MusicPlayResult(
+    val url: String,
+    val quality: AudioQuality,
+    val sourceId: String? = null
+)

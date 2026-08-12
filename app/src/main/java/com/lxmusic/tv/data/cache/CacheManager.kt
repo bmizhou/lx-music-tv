@@ -151,6 +151,25 @@ object CacheManager {
         }
     }
 
+    // 2.8 翻译歌词缓存（与主歌词同 key、不同扩展名；无翻译的歌曲命中返回 null）
+
+    /** 命中返回翻译歌词文本，未命中返回 null */
+    fun getLyricTranslation(context: Context, song: Song): String? {
+        val f = File(lyricDir(context), lyricKey(song) + ".tlyric.lrc")
+        return if (f.exists() && f.length() > 0) {
+            try { f.readText(Charsets.UTF_8) } catch (e: Exception) { null }
+        } else null
+    }
+
+    /** 写入翻译歌词缓存 */
+    fun putLyricTranslation(context: Context, song: Song, tlyric: String) {
+        try {
+            File(lyricDir(context), lyricKey(song) + ".tlyric.lrc").writeText(tlyric, Charsets.UTF_8)
+        } catch (e: Exception) {
+            // 忽略写入失败
+        }
+    }
+
     // ==================== 播放 URL 短期缓存（内存 LRU + Room 持久化） ====================
 
     private data class UrlEntry(val url: String, val expireAt: Long)
@@ -195,6 +214,20 @@ object CacheManager {
             }
         } catch (e: Exception) {
             // 持久化失败不影响内存缓存
+        }
+    }
+
+    /** 2.8 删除指定 URL 缓存（播放失败时清掉坏 URL，防止后续播放命中污染缓存） */
+    @Synchronized
+    fun removeUrl(key: String) {
+        urlCache.remove(key)
+        try {
+            val ctx = requireContext()
+            runBlocking {
+                LxMusicDatabase.getDatabase(ctx).cacheItemDao().deleteByKey(key)
+            }
+        } catch (e: Exception) {
+            // 删除失败忽略
         }
     }
 

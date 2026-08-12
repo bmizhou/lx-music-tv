@@ -316,6 +316,10 @@ interface CacheItemDao {
     @Query("SELECT * FROM cache_items WHERE `key` = :key AND expireAt > :now")
     suspend fun getValid(key: String, now: Long): CacheItemEntity?
 
+    // 2.8 按 key 删除（播放失败时清掉坏 URL 缓存，防后续播放命中污染）
+    @Query("DELETE FROM cache_items WHERE `key` = :key")
+    suspend fun deleteByKey(key: String)
+
     @Query("DELETE FROM cache_items WHERE expireAt <= :now")
     suspend fun deleteExpired(now: Long)
 

@@ -111,6 +111,9 @@ fun MainScreen(
     onDefaultPlatformChange: (MusicPlatform) -> Unit = {},
     preferredQuality: AudioQuality = AudioQuality.QUALITY_320K,
     onPreferredQualityChange: (AudioQuality) -> Unit = {},
+    // 2.8 歌词设置：是否显示翻译歌词
+    lyricTranslationEnabled: Boolean = true,
+    onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
     browseItems: List<BrowseItem> = emptyList(),
     browseSongs: List<Song> = emptyList(),
     browseLoading: Boolean = false,
@@ -175,8 +178,6 @@ fun MainScreen(
     var navInitialFocusRequested by rememberSaveable { mutableStateOf(false) }
     // 从子路由返回的信号：递增后通知当前 tab 页面恢复内容焦点（如设置页回到点击的卡片）
     var contentRestoreTick by remember { mutableIntStateOf(0) }
-    // 2.8 侧栏 Logo 点击 → 平台选择对话框（切换默认音乐平台）
-    var showLogoPlatformDialog by remember { mutableStateOf(false) }
 
     // ===== Logo 焦点兜底（2.8 治本方案：区分「系统分配」与「用户按键」）=====
     // Logo 可点击后成为侧栏第一个可聚焦节点；Compose 在「组合重建/视图切换导致焦点清除」时按布局
@@ -242,8 +243,8 @@ fun MainScreen(
                 contentEnterRequester = contentEnterRequester,
                 // Logo 下方展示当前默认音乐平台
                 platform = defaultPlatform,
-                // 2.8 Logo 可点击：切换默认音乐平台（点击即用户主动，弹出平台选择框）
-                onLogoClick = { showLogoPlatformDialog = true },
+                // 2.8 Logo 点击 → 下拉菜单选择平台（选中即切换默认音乐平台）
+                onPlatformSelect = onDefaultPlatformChange,
                 // 2.8 Logo 焦点状态上报：记录聚焦时刻，兜底判断「系统分配 vs 用户按键」
                 onLogoFocusChanged = { focused ->
                     logoFocused = focused
@@ -293,6 +294,9 @@ fun MainScreen(
                 onDefaultPlatformChange = onDefaultPlatformChange,
                 preferredQuality = preferredQuality,
                 onPreferredQualityChange = onPreferredQualityChange,
+                // 2.8 歌词设置
+                lyricTranslationEnabled = lyricTranslationEnabled,
+                onLyricTranslationEnabledChange = onLyricTranslationEnabledChange,
                 browseItems = browseItems,
                 browseSongs = browseSongs,
                 browseLoading = browseLoading,
@@ -326,18 +330,6 @@ fun MainScreen(
                     .fillMaxHeight()
             )
         }
-
-        // 2.8 侧栏 Logo 点击 → 平台选择对话框（切换默认音乐平台）
-        if (showLogoPlatformDialog) {
-            PlatformSelectDialog(
-                currentPlatform = defaultPlatform,
-                onSelect = { platform ->
-                    onDefaultPlatformChange(platform)
-                    showLogoPlatformDialog = false
-                },
-                onDismiss = { showLogoPlatformDialog = false }
-            )
-        }
     }
 
 /**
@@ -351,8 +343,8 @@ fun NavigationSidebar(
     contentEnterRequester: FocusRequester,
     // 当前默认音乐平台（Logo 下方展示）
     platform: MusicPlatform = MusicPlatform.KW,
-    // 2.8 Logo 可点击：点击弹出平台选择对话框（MainScreen 层处理）
-    onLogoClick: () -> Unit = {},
+    // 2.8 Logo 点击 → 下拉菜单选择平台（选中即切换默认音乐平台）
+    onPlatformSelect: (MusicPlatform) -> Unit = {},
     // 2.8 Logo 焦点状态上报（MainScreen 用于「系统默认分配落 logo 时移回当前 tab」的兜底）
     onLogoFocusChanged: (Boolean) -> Unit = {},
     // 侧栏是否持有焦点（MainActivity 返回键逻辑用：焦点在内容区时第一次返回先回 tab）
@@ -395,47 +387,103 @@ fun NavigationSidebar(
                 .padding(horizontal = 6.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-        // Logo区域（窄栏：小图标 + 底部显示当前音乐平台名；2.8 可点击切换音乐平台）
+        // Logo区域（窄栏：小图标 + 底部显示当前音乐平台名；2.8 可点击弹出下拉菜单切换平台）
         // 焦点样式与下方 tab 项（NavigationItem）完全一致：聚焦 LXFocusFill 背景 + 同款边框，
         // modifier 顺序也对齐（lxFocusBorder 在 clickable 之前）
         var logoFocused by remember { mutableStateOf(false) }
+        // 2.8 下拉菜单展开状态（点击 logo 弹出，选中/失焦关闭）
+        var logoMenuExpanded by remember { mutableStateOf(false) }
         val logoBgColor = if (logoFocused) LXFocusFill else Color.Transparent
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(64.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(logoBgColor)
-                .onFocusChanged {
-                    logoFocused = it.isFocused
-                    onLogoFocusChanged(it.isFocused)
-                }
-                .lxFocusBorder(
-                    shape = RoundedCornerShape(10.dp),
-                    glow = false,
-                    animated = false,
-                    unfocusedColor = Color.Transparent,
-                    unfocusedWidth = 0.dp
+        Box {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(logoBgColor)
+                    .onFocusChanged {
+                        logoFocused = it.isFocused
+                        onLogoFocusChanged(it.isFocused)
+                    }
+                    .lxFocusBorder(
+                        shape = RoundedCornerShape(10.dp),
+                        glow = false,
+                        animated = false,
+                        unfocusedColor = Color.Transparent,
+                        unfocusedWidth = 0.dp
+                    )
+                    // Logo 可点击：弹出下拉平台菜单（clickable 自带 focusable，遥控器可聚焦）
+                    .clickable { logoMenuExpanded = true },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_logo),
+                    contentDescription = "LX Music",
+                    modifier = Modifier.size(32.dp)
                 )
-                // Logo 可点击：弹出平台选择对话框（clickable 自带 focusable，遥控器可聚焦）
-                .clickable { onLogoClick() },
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Image(
-                painter = painterResource(R.drawable.ic_logo),
-                contentDescription = "LX Music",
-                modifier = Modifier.size(32.dp)
-            )
-            // 当前默认音乐平台（短名，如 酷狗/QQ）
-            Text(
-                text = platformShortName(platform),
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color = platformBrandColor(platform),
-                maxLines = 1,
-                modifier = Modifier.padding(top = 2.dp)
-            )
+                // 当前默认音乐平台（短名，如 酷狗/QQ）
+                Text(
+                    text = platformShortName(platform),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = platformBrandColor(platform),
+                    maxLines = 1,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+
+            // 2.8 下拉平台选择菜单（紧凑：挂在 logo 下方，宽度与 logo 一致（侧栏 72dp - 左右 6dp padding = 60dp））
+            DropdownMenu(
+                expanded = logoMenuExpanded,
+                onDismissRequest = { logoMenuExpanded = false },
+                modifier = Modifier.width(60.dp)
+            ) {
+                // 可选平台（排除本地音乐），仅显示平台短名（如 酷狗/QQ）
+                MusicPlatform.values()
+                    .filter { it != MusicPlatform.LOCAL }
+                    .forEach { p ->
+                        val isSelected = p == platform
+                        // 当前平台项的焦点请求器：菜单展开时焦点定位到当前平台
+                        val itemRequester = remember(p) { FocusRequester() }
+                        // 菜单展开且本项为当前平台 → 焦点定位到它（等一帧确保菜单内容已组合）
+                        LaunchedEffect(logoMenuExpanded, p) {
+                            if (logoMenuExpanded && isSelected) {
+                                withFrameNanos {}
+                                itemRequester.requestFocus()
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(38.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                // 当前平台用颜色区分（主题色背景），无打勾图标
+                                .background(if (isSelected) LXPrimary.copy(alpha = 0.18f) else Color.Transparent)
+                                .focusRequester(itemRequester)
+                                .lxFocusBorder(
+                                    shape = RoundedCornerShape(6.dp),
+                                    glow = false,
+                                    animated = false,
+                                    unfocusedColor = Color.Transparent,
+                                    unfocusedWidth = 0.dp
+                                )
+                                .clickable {
+                                    logoMenuExpanded = false
+                                    if (!isSelected) onPlatformSelect(p)
+                                },
+                            // 平台名居中显示
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = platformShortName(p),
+                                fontSize = 13.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) LXPrimary else LXTextPrimary
+                            )
+                        }
+                    }
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -671,6 +719,9 @@ fun MainContent(
     onDefaultPlatformChange: (MusicPlatform) -> Unit = {},
     preferredQuality: AudioQuality = AudioQuality.QUALITY_320K,
     onPreferredQualityChange: (AudioQuality) -> Unit = {},
+    // 2.8 歌词设置：是否显示翻译歌词
+    lyricTranslationEnabled: Boolean = true,
+    onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
     browseItems: List<BrowseItem> = emptyList(),
     browseSongs: List<Song> = emptyList(),
     browseLoading: Boolean = false,
@@ -814,6 +865,9 @@ fun MainContent(
                 onDefaultPlatformChange = onDefaultPlatformChange,
                 preferredQuality = preferredQuality,
                 onPreferredQualityChange = onPreferredQualityChange,
+                // 2.8 歌词设置
+                lyricTranslationEnabled = lyricTranslationEnabled,
+                onLyricTranslationEnabledChange = onLyricTranslationEnabledChange,
                 contentEnterRequester = contentEnterRequester,
                 onExitToNav = { navRequesters[selectedTab].requestFocus() },
                 // 重复点击 tab 刷新信号：滚动回顶部
@@ -1726,6 +1780,9 @@ fun SettingsScreen(
     onDefaultPlatformChange: (MusicPlatform) -> Unit = {},
     preferredQuality: AudioQuality = AudioQuality.QUALITY_320K,
     onPreferredQualityChange: (AudioQuality) -> Unit = {},
+    // 2.8 歌词设置：是否显示翻译歌词
+    lyricTranslationEnabled: Boolean = true,
+    onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
     contentEnterRequester: FocusRequester,
     onExitToNav: () -> Unit,
     // 重复点击 tab 刷新信号：>0 且变化时滚动回顶部
@@ -1736,6 +1793,8 @@ fun SettingsScreen(
 ) {
     var showPlatformDialog by remember { mutableStateOf(false) }
     var showQualityDialog by remember { mutableStateOf(false) }
+    // 2.8 歌词设置弹窗
+    var showLyricsDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
 
     // 设置列表滚动状态（重复点击「设置」tab 时滚动回顶部）
@@ -1743,8 +1802,8 @@ fun SettingsScreen(
 
     // 进入子路由前点击的设置项索引（rememberSaveable：从子路由返回重新组合后仍可恢复）
     var lastClickedIndex by rememberSaveable { mutableIntStateOf(-1) }
-    // 各设置项的焦点请求器（用于返回后恢复焦点到点击的卡片；共 6 项：默认音乐平台/播放源管理/播放设置/界面设置/缓存管理/关于）
-    val itemRequesters = remember { List(6) { FocusRequester() } }
+    // 各设置项的焦点请求器（用于返回后恢复焦点到点击的卡片；共 7 项：默认音乐平台/播放源管理/播放设置/歌词设置/界面设置/缓存管理/关于）
+    val itemRequesters = remember { List(7) { FocusRequester() } }
 
     // 重复点击「设置」tab：滚动回顶部（仅 tick 真正变化时，避免组件重建误触发）
     var lastRefreshTick by remember { mutableIntStateOf(refreshTick) }
@@ -1760,7 +1819,7 @@ fun SettingsScreen(
     LaunchedEffect(restoreTick) {
         if (restoreTick > 0 && restoreTick != lastRestoreTick) {
             lastRestoreTick = restoreTick
-            if (lastClickedIndex in 0..5) {
+            if (lastClickedIndex in 0..6) {
                 itemRequesters[lastClickedIndex].requestFocus()
             }
         }
@@ -1812,16 +1871,26 @@ fun SettingsScreen(
                 onExitToNav = onExitToNav
             )
 
+            // 2.8 歌词设置：显示翻译歌词开关
+            SettingsItem(
+                title = "歌词设置",
+                subtitle = "是否在播放页显示歌词翻译（当前：${if (lyricTranslationEnabled) "开启" else "关闭"}）",
+                icon = Icons.Default.Lyrics,
+                onClick = { showLyricsDialog = true },
+                extraFocusRequester = itemRequesters[3],
+                onExitToNav = onExitToNav
+            )
+
             SettingsItem(
                 title = "界面设置",
                 subtitle = "主题模式、主题色等界面相关设置",
                 icon = Icons.Default.Palette,
                 onClick = {
                     // 记录点击项：从子路由返回时恢复焦点到本卡片
-                    lastClickedIndex = 3
+                    lastClickedIndex = 4
                     onNavigateToInterfaceSettings()
                 },
-                extraFocusRequester = itemRequesters[3],
+                extraFocusRequester = itemRequesters[4],
                 onExitToNav = onExitToNav
             )
 
@@ -1831,10 +1900,10 @@ fun SettingsScreen(
                 icon = Icons.Default.Storage,
                 onClick = {
                     // 2.8 改为独立子页面；记录点击项：从子路由返回时恢复焦点到本卡片
-                    lastClickedIndex = 4
+                    lastClickedIndex = 5
                     onNavigateToCacheManage()
                 },
-                extraFocusRequester = itemRequesters[4],
+                extraFocusRequester = itemRequesters[5],
                 onExitToNav = onExitToNav
             )
 
@@ -1843,7 +1912,7 @@ fun SettingsScreen(
                 subtitle = "版本号、说明等",
                 icon = Icons.Default.Info,
                 onClick = { showAboutDialog = true },
-                extraFocusRequester = itemRequesters[5],
+                extraFocusRequester = itemRequesters[6],
                 onExitToNav = onExitToNav
             )
         }
@@ -1870,6 +1939,15 @@ fun SettingsScreen(
                 showQualityDialog = false
             },
             onDismiss = { showQualityDialog = false }
+        )
+    }
+
+    // 2.8 歌词设置对话框：显示翻译歌词开关
+    if (showLyricsDialog) {
+        LyricsSettingsDialog(
+            translationEnabled = lyricTranslationEnabled,
+            onTranslationEnabledChange = onLyricTranslationEnabledChange,
+            onDismiss = { showLyricsDialog = false }
         )
     }
 
@@ -1929,6 +2007,67 @@ fun AboutDialog(onDismiss: () -> Unit) {
                     fontSize = 13.sp,
                     color = LXPrimary,
                     modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("确定", color = LXPrimary)
+            }
+        }
+    )
+}
+
+/**
+ * 2.8 歌词设置对话框：显示翻译歌词开关（设置页歌词设置项进入）
+ */
+@Composable
+fun LyricsSettingsDialog(
+    translationEnabled: Boolean,
+    onTranslationEnabledChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LXSurfaceDialog,
+        title = { Text("歌词设置", fontSize = 20.sp, color = LXTextPrimary) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                // 显示翻译歌词开关（整行可聚焦点击切换）
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .lxFocusBorder(
+                            shape = RoundedCornerShape(8.dp),
+                            glow = false,
+                            animated = false,
+                            unfocusedColor = Color.Transparent,
+                            unfocusedWidth = 0.dp
+                        )
+                        .clickable { onTranslationEnabledChange(!translationEnabled) }
+                        .padding(vertical = 10.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "显示翻译歌词",
+                        fontSize = 15.sp,
+                        color = LXTextPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = translationEnabled,
+                        onCheckedChange = onTranslationEnabledChange,
+                        colors = SwitchDefaults.colors(
+                            checkedTrackColor = LXPrimary,
+                            checkedThumbColor = Color.White
+                        )
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "开启后，播放页歌词下方显示翻译（需音源/接口返回翻译歌词）",
+                    fontSize = 12.sp,
+                    color = LXTextSecondary
                 )
             }
         },

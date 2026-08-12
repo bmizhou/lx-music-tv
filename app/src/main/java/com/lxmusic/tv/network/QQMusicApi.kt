@@ -176,13 +176,13 @@ class QQMusicApi(
     }
 
     /**
-     * 获取歌词
+     * 获取歌词（2.8 增加翻译：接口返回含 trans 字段，构造统一 JSON {lyric, tlyric} 供解析）
      * @param songMid QQ音乐歌曲mid
-     * @return LRC格式歌词
+     * @return JSON 字符串 {lyric, tlyric}（洛雪歌词协议字段名）；失败返回 null
      */
     suspend fun getLyric(songMid: String): String? = withContext(Dispatchers.IO) {
         try {
-            // 老版歌词接口（实测可用，nobase64=1 直接返回明文 LRC）
+            // 老版歌词接口（实测可用，nobase64=1 直接返回明文 LRC，lyric + trans 翻译字段）
             // musicu.fcg 的 GetPlaySongLyric 已失效（返回 code=500003）
             val url = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg" +
                     "?songmid=$songMid&format=json&nobase64=1"
@@ -191,7 +191,13 @@ class QQMusicApi(
             if (response.isSuccess) {
                 val json = parseToObj(response.body)
                 if (json.optInt("retcode", -1) == 0) {
-                    json.optStr("lyric")
+                    val lyric = json.optStr("lyric").orEmpty()
+                    val trans = json.optStr("trans").orEmpty()
+                    // 构造统一 JSON（构造请求体用 org.json，无重复 key 安全）
+                    org.json.JSONObject()
+                        .put("lyric", lyric)
+                        .apply { if (trans.isNotEmpty()) put("tlyric", trans) }
+                        .toString()
                 } else {
                     null
                 }

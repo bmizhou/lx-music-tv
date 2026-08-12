@@ -58,9 +58,12 @@ class ScriptParser {
 
     /**
      * 从脚本中提取注解信息
+     * 用 [^\r\n]+ 匹配「@注解 后的整行内容」：兼容 LF/CRLF 行尾。
+     * 旧正则 (.+?)(?:\n|$) 在 CRLF（\r\n）文件上存在引擎差异（JS/Java 会跨过 \r\n 匹配到错误位置），
+     * 导致 @name 解析为 null → 播放源显示「未知源」（洛雪 PC 正常是因为其解析器不同）。
      */
     private fun extractAnnotation(scriptContent: String, annotation: String): String? {
-        val pattern = Pattern.compile("$annotation\\s+(.+?)(?:\\n|$)")
+        val pattern = Pattern.compile("$annotation\\s+([^\\r\\n]+)")
         val matcher = pattern.matcher(scriptContent)
         return if (matcher.find()) {
             matcher.group(1)?.trim()

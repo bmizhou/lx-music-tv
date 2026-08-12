@@ -196,6 +196,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playlist: StateFlow<List<Song>> = _playlist.asStateFlow()
     private val _currentLyric = MutableStateFlow<String?>(null)
     val currentLyric: StateFlow<String?> = _currentLyric.asStateFlow()
+    // 2.8 翻译歌词（tlyric，JS 源返回 JSON 歌词时才有；设置页可开关显示）
+    private val _currentLyricTranslation = MutableStateFlow<String?>(null)
+    val currentLyricTranslation: StateFlow<String?> = _currentLyricTranslation.asStateFlow()
+    // 2.8 是否显示翻译歌词（歌词设置，SharedPreferences 持久化，默认开启）
+    private val _lyricTranslationEnabled = MutableStateFlow(true)
+    val lyricTranslationEnabled: StateFlow<Boolean> = _lyricTranslationEnabled.asStateFlow()
+    // 2.8 当前实际播放音质（getMusicUrl 降级重试成功后记录的真实音质，非设置里的偏好音质）
+    private val _currentPlayQuality = MutableStateFlow<AudioQuality?>(null)
+    val currentPlayQuality: StateFlow<AudioQuality?> = _currentPlayQuality.asStateFlow()
+    // 2.8 本轮播放尝试中已失败的源 id 集合：某源返回的 URL 实测无法播放（403/404 等）后加入，
+    // 同一轮自动失败重试时跳过这些源、按设置顺序继续尝试下一个源；
+    // **仅本轮有效**——用户每次主动播放/点播放都会清空，重新按设置顺序从头尝试（源可能只是暂时不可用）
+    private val tryFailedSourceIds = mutableSetOf<String>()
+    // 当前播放 URL 来自哪个源（播放失败时把该源加入失败集合，重试跳过它）
+    private var currentPlaySourceId: String? = null
+    // 2.8 播放失败标记：失败后「播放/暂停」恢复播放时需重新解析 URL（坏 URL/换源场景），
+    // 否则 resume 旧 MediaItem 仍会失败；playSong 成功启动时重置
+    private var playNeedsReFetch = false
 
     // ========== 播放历史和收藏 ==========
     private val _playHistory = MutableStateFlow<List<PlayHistory>>(emptyList())
@@ -264,6 +282,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // 读取偏好音质（设置页播放设置，默认 320k）
         _preferredQuality.value = loadPreferredQuality()
+
+        // 2.8 读取「显示翻译歌词」开关（歌词设置，默认开启）
+        _lyricTranslationEnabled.value = loadLyricTranslationEnabled()
 
         // 加载搜索页热门搜索关键词
         loadHotKeywords(_defaultPlatform.value)
@@ -658,6 +679,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             AudioQuality.valueOf(name)
         } catch (e: Exception) {
             AudioQuality.QUALITY_320K
+        }
+    }
+
+    /**
+     * 2.8 设置「显示翻译歌词」开关（设置页歌词设置），持久化到 SharedPreferences
+     */
+    fun setLyricTranslationEnabled(enabled: Boolean) {
+        _lyricTranslationEnabled.value = enabled
+        try {
+            app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("lyric_translation_enabled", enabled)
+                .apply()
+        } catch (e: Exception) {
+            Log.e("LX-MainViewModel", "保存歌词翻译开关失败: ${e.message}")
+        }
+    }
+
+    private fun loadLyricTranslationEnabled(): Boolean {
+        return try {
+            app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .getBoolean("lyric_translation_enabled", true)
+        } catch (e: Exception) {
+            true
         }
     }
 
@@ -1226,6 +1271,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun playSong(song: Song, playlist: List<Song> = emptyList()) {
         viewModelScope.launch {
+            // 2.8 用户主动选歌：清空本轮失败源（新一次播放按设置顺序从最高优先级源重新尝试，
+            // 上次失败的源可能已恢复）
+            tryFailedSourceIds.clear()
+            currentPlaySourceId = null
+            playNeedsReFetch = false
             _currentSong.value = song
             _isPlaying.value = true
             // 立即停止旧播放并清空进度/时长：JS 源获取 URL 可能耗时数秒，
@@ -1247,6 +1297,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             // 自动加载歌词（播放页右侧显示）
             _currentLyric.value = null
+            _currentLyricTranslation.value = null
+            // 2.8 清空音质：新歌解析前显示「未知」，避免残留上一首歌的音质
+            _currentPlayQuality.value = null
             loadLyrics(song)
 
             // 记录播放历史
@@ -1265,36 +1318,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.e("LX-MainViewModel", "记录播放历史失败: ${e.message}", e)
             }
 
-            // 获取播放URL并播放
+            // 获取播放URL并播放（失败提示由 doResolveAndPlay 处理）
             try {
                 Log.d("LX-MainViewModel", "[playSong] 获取URL: ${song.name}, playerService=${if (playerService != null) "非空" else "null"}, isServiceBound=$isServiceBound")
-                // 使用 MusicSearchService 获取播放URL（先尝试自定义源，再尝试内置API）。
-                // 2.7 音频缓存由 PlayerService 的 CacheDataSource 在播放时自动边播边写（key=URL），
-                // 同一 URL 第二次播放直接读本地缓存，无需手动下载。
-                val urlResult = searchService.getMusicUrl(song, _preferredQuality.value)
-                if (urlResult.success && urlResult.data != null) {
-                    // 通过PlayerService播放（cacheKey=歌曲维度：JS 源 URL 变化仍命中本地音频缓存，不重新下载）
-                    playerService?.play(
-                        PlayerService.MusicInfo(
-                            id = song.id,
-                            title = song.name,
-                            artist = song.singer,
-                            url = urlResult.data,
-                            picUrl = song.picUrl,
-                            cacheKey = CacheManager.urlKey(song, _preferredQuality.value)
-                        )
-                    )
-                    // 持久化当前歌曲：后台播放后进程重建可恢复左下角播放卡片
-                    saveCurrentSongPrefs(song)
-                } else {
-                    _toastMessage.value = "获取播放地址失败: ${urlResult.message ?: "未知错误"}"
-                    _isPlaying.value = false
-                }
+                // 2.8 播放 URL 只走 JS 源；返回的 sourceId 记录当前 URL 来源，
+                // 播放失败时把该源加入黑名单，重试跳过它真正尝试下一个源
+                doResolveAndPlay(song, playlist, _preferredQuality.value)
             } catch (e: Exception) {
                 _toastMessage.value = "播放失败: ${e.message}"
                 _isPlaying.value = false
             }
         }
+    }
+
+    /**
+     * 2.8 解析播放 URL 并播放（跳过 tryFailedSourceIds 本轮已失败源）
+     * @return 是否成功开始播放
+     */
+    private suspend fun doResolveAndPlay(song: Song, playlist: List<Song>, quality: AudioQuality): Boolean {
+        val urlResult = searchService.getMusicUrl(song, quality, tryFailedSourceIds.toSet())
+        if (urlResult.success && urlResult.data != null) {
+            // 记录 URL 来源源 id：播放失败时加入黑名单，重试跳过该源
+            currentPlaySourceId = urlResult.data.sourceId
+            playNeedsReFetch = false
+            // 通过PlayerService播放（cacheKey=歌曲维度：JS 源 URL 变化仍命中本地音频缓存，不重新下载）
+            playerService?.play(
+                PlayerService.MusicInfo(
+                    id = song.id,
+                    title = song.name,
+                    artist = song.singer,
+                    url = urlResult.data.url,
+                    picUrl = song.picUrl,
+                    cacheKey = CacheManager.urlKey(song, quality)
+                )
+            )
+            // 持久化当前歌曲：后台播放后进程重建可恢复左下角播放卡片
+            saveCurrentSongPrefs(song)
+            return true
+        }
+        _toastMessage.value = "播放失败：所有播放源均无法获取有效播放地址"
+        _isPlaying.value = false
+        playNeedsReFetch = false
+        return false
     }
 
     /**
@@ -1313,8 +1378,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             playerService?.pause()
             _isPlaying.value = false
         } else {
-            playerService?.resume()
-            _isPlaying.value = true
+            val song = _currentSong.value
+            if (song != null && playNeedsReFetch) {
+                // 2.8 上次播放失败（坏 URL/换源后未重新解析）：点播放 = 用户主动发起新一轮播放，
+                // 清空本轮失败源，重新按设置顺序从头尝试（上次失败的源可能已恢复）
+                Log.w("LX-MainViewModel", "播放失败过，点击播放 → 重新按顺序解析 URL: ${song.name}")
+                playNeedsReFetch = false
+                tryFailedSourceIds.clear()
+                currentPlaySourceId = null
+                viewModelScope.launch {
+                    playerService?.stop()
+                    _progress.value = 0f
+                    _duration.value = 0L
+                    doResolveAndPlay(song, _playlist.value, _preferredQuality.value)
+                }
+            } else {
+                playerService?.resume()
+                _isPlaying.value = true
+            }
         }
     }
 
@@ -1403,6 +1484,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * 获取歌词（2.7 加磁盘缓存：命中直接返回，未命中获取成功后写入）
+     * 2.8 增加翻译歌词（tlyric）链路：单独缓存 + 状态下发（设置页开关控制是否显示）
      */
     fun loadLyrics(song: Song) {
         viewModelScope.launch {
@@ -1411,14 +1493,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val app = getApplication<Application>()
                 CacheManager.getLyric(app, song)?.let { cached ->
                     _currentLyric.value = cached
+                    // 翻译歌词缓存（可能为空：无翻译的歌曲）
+                    _currentLyricTranslation.value = CacheManager.getLyricTranslation(app, song)
                     return@launch
                 }
                 val result = searchService.getLyrics(song)
                 if (result.success && result.data != null) {
                     _currentLyric.value = result.data.lyric
+                    // 2.8 翻译歌词
+                    _currentLyricTranslation.value = result.data.tlyric
                     // 写歌词缓存（仅当有内容时）
                     if (!result.data.lyric.isNullOrBlank()) {
                         CacheManager.putLyric(app, song, result.data.lyric)
+                    }
+                    // 写翻译歌词缓存（有内容才写）
+                    if (!result.data.tlyric.isNullOrBlank()) {
+                        CacheManager.putLyricTranslation(app, song, result.data.tlyric)
                     }
                 }
             } catch (e: Exception) {
@@ -1881,6 +1971,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 自动播放下一曲（2.7 音频缓存由 CacheDataSource 播放时自动写入，无需在此缓存）
                 playNext()
             }
+
+            // 2.8 实际播放音质：ExoPlayer 解析出的真实格式（覆盖 playSong 记录的请求音质）
+            override fun onAudioFormatChanged(quality: AudioQuality) {
+                Log.d("LX-MainViewModel", "onAudioFormatChanged: ${quality.displayName} (${quality.key})")
+                _currentPlayQuality.value = quality
+            }
+
+            // 2.8 播放出错（坏 URL 等）：把当前 URL 来源的源记入本轮失败集合，
+            // 按设置顺序自动切换到下一个源重新解析播放——不卡在同一个失败源上无限重试。
+            //（本轮失败集合只影响本轮：用户下次主动播放/点播放会清空，源恢复后重新按顺序尝试。）
+            // 所有源都失败后 doResolveAndPlay 返回失败 → 提示并停止，不再无限重试。
+            override fun onPlaybackError() {
+                // 播放失败标记：后续「播放/暂停」恢复时重新解析 URL（不再 resume 坏 MediaItem）
+                playNeedsReFetch = true
+                val song = _currentSong.value
+                if (song == null) {
+                    _isPlaying.value = false
+                    return
+                }
+                // 当前 URL 来源的源加入本轮失败集合（URL 由 JS 源解析返回，必有来源；防御空值则不再重试）
+                val badSourceId = currentPlaySourceId
+                if (badSourceId == null) {
+                    Log.w("LX-MainViewModel", "播放出错但未知来源源，停止重试: ${song.name}")
+                    _isPlaying.value = false
+                    _toastMessage.value = "播放失败：无法获取有效播放地址"
+                    return
+                }
+                tryFailedSourceIds.add(badSourceId)
+                Log.w("LX-MainViewModel", "播放出错，源[$badSourceId] URL 无效，按顺序切下一个源: ${song.name}（本轮已失败 ${tryFailedSourceIds.size} 个源）")
+                viewModelScope.launch {
+                    // 停止旧播放并清进度，重新解析（本轮失败集合保留：不重试失败源，切下一个）
+                    playerService?.stop()
+                    _progress.value = 0f
+                    _duration.value = 0L
+                    doResolveAndPlay(song, _playlist.value, _preferredQuality.value)
+                }
+            }
         })
 
         // 服务绑定/重建后：同步真实播放状态（后台播放恢复时服务可能仍在播放）
@@ -1898,6 +2025,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     // 补加载歌词，避免播放页显示"无歌词"
                     _currentLyric.value = null
+                    _currentLyricTranslation.value = null
                     loadLyrics(song)
                     // 同步进度/时长
                     val pos = runCatching { playerService?.getCurrentPosition() }.getOrNull() ?: 0L
