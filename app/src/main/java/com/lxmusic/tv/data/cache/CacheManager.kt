@@ -109,6 +109,53 @@ object CacheManager {
         }
         audioCache = null
         audioDir(context).listFiles()?.forEach { it.delete() }
+        // 2.8 音频缓存整体删除 → 所有「完整缓存」标记失效，同步清空（避免残留标记影响半截缓存清理）
+        clearCompletedMarks()
+    }
+
+    /**
+     * 2.8 删除指定缓存 key 的音频缓存（歌曲未完整播放就切换/停止/退出时，清理半截缓存）。
+     * SimpleCache.removeResource 删除该 key 的全部缓存分片；key 与播放时 setCacheKey 一致（平台|歌曲id|音质）。
+     */
+    fun removeAudioByKey(context: Context, key: String) {
+        if (key.isBlank()) return
+        try {
+            getAudioCache(context).removeResource(key)
+        } catch (e: Exception) {
+            // 缓存索引异常时忽略（下次播放自然重建）
+        }
+    }
+
+    // ========== 2.8 完整缓存标记（PlayerService 写入，清缓存时同步清理，保持状态一致） ==========
+    // 标记存在 SharedPreferences（lx_settings，key=music_cache_completed），记录「完整听过、缓存整首在盘」的歌曲；
+    // 手动清缓存后标记必须同步移除，否则残留标记会让「曾完整缓存过的歌」在缓存被清后，
+    // 重新播一半切走时不清理半截缓存（违背 v202/v203 清理逻辑）。
+
+    /** 清空全部完整缓存标记（clearAudio/clearAll 后调用：音频缓存整体删除，所有标记失效） */
+    private fun clearCompletedMarks() {
+        try {
+            appContext?.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
+                ?.edit()
+                ?.remove("music_cache_completed")
+                ?.apply()
+        } catch (e: Exception) {
+        }
+    }
+
+    /** 移除指定缓存 key 的完整标记（clearUnfavoritedAudio 删除部分歌曲缓存后调用） */
+    private fun clearCompletedMarks(keys: Set<String>) {
+        if (keys.isEmpty()) return
+        try {
+            val prefs = appContext?.getSharedPreferences("lx_settings", Context.MODE_PRIVATE) ?: return
+            val set = (prefs.getStringSet("music_cache_completed", emptySet()) ?: emptySet()).toMutableSet()
+            set.removeAll(keys)
+            if (set.isEmpty()) {
+                prefs.edit().remove("music_cache_completed").apply()
+            } else {
+                prefs.edit().putStringSet("music_cache_completed", set).apply()
+            }
+        } catch (e: Exception) {
+        }
     }
 
     /**
@@ -119,14 +166,18 @@ object CacheManager {
     fun clearUnfavoritedAudio(context: Context, favoriteKeys: Set<String>) {
         try {
             val cache = getAudioCache(context)
+            val removedKeys = mutableSetOf<String>()
             cache.keys.forEach { key ->
                 val parts = key.split("|")
                 // 仅处理「平台|歌曲id|音质」格式的歌曲维度 key（URL 兜底 key 不含该结构）
                 val prefix = if (parts.size >= 2) "${parts[0]}|${parts[1]}" else null
                 if (prefix != null && prefix !in favoriteKeys) {
                     cache.removeResource(key)
+                    removedKeys.add(key)
                 }
             }
+            // 2.8 同步移除被删歌曲的完整缓存标记（避免残留标记影响后续半截缓存清理）
+            clearCompletedMarks(removedKeys)
         } catch (e: Exception) {
             // 遍历/删除异常忽略
         }

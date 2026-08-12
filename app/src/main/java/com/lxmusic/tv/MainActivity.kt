@@ -433,6 +433,8 @@ fun LXMusicApp() {
                 onBack = { navController.popBackStack() },
                 // 2.8 返回按钮按右键 → 聚焦右上角悬浮播放球
                 onFocusFloatingBall = { floatingBallRequester.requestFocus() },
+                // 2.8 清除音频缓存后重建播放器（避免旧 SimpleCache 失效导致后续播放失败）
+                onCacheCleared = { viewModel.notifyAudioCacheCleared() },
                 modifier = Modifier.fillMaxSize()
             )
         }

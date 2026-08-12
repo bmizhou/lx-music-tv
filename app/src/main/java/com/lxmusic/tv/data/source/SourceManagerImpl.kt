@@ -86,7 +86,8 @@ class SourceManagerImpl(
             val ds = dataStoreManager ?: return
             val savedSources = ds.getAllSources().first()
             sources.clear()
-            // 按导入时间（createdAt）升序：优先级 = 导入顺序，重启后保持不变
+            // 按导入时间（createdAt）升序：仅保持列表展示顺序（管理页/接口返回）；
+            // 播放优先级 = 启用顺序（enabledAt），见 getEnabledSources
             sources.addAll(savedSources.sortedBy { it.createdAt })
             // 恢复启用的源
             enabledSourceId = savedSources.find { it.isEnabled }?.id
@@ -119,10 +120,16 @@ class SourceManagerImpl(
             // 检查是否已存在同名源
             val existingIndex = sources.indexOfFirst { it.name == source.name }
             if (existingIndex >= 0) {
-                // 更新已存在的源
-                val updated = source.copy(updatedAt = System.currentTimeMillis())
+                // 更新已存在的源：**保留原 id 与 createdAt**（优先级顺序 = 导入顺序，重传同名源不改变位置，
+                // 否则新 UUID 会导致数据库按 id REPLACE 插新行、旧行残留，重启后重复源 + 顺序混乱）
+                val existing = sources[existingIndex]
+                val updated = source.copy(
+                    id = existing.id,
+                    createdAt = existing.createdAt,
+                    updatedAt = System.currentTimeMillis()
+                )
                 sources[existingIndex] = updated
-                // 异步保存到数据库
+                // 异步保存到数据库（按原 id 覆盖，无残留行）
                 kotlinx.coroutines.runBlocking {
                     dataStoreManager?.saveSource(updated)
                 }
@@ -160,16 +167,18 @@ class SourceManagerImpl(
     }
 
     /**
-     * 设置播放源启用状态
+     * 设置播放源启用状态（2.8 启用时记录 enabledAt：优先级 = 启用顺序）
      */
     override fun setSourceEnabled(id: String, enabled: Boolean): Boolean {
         val index = sources.indexOfFirst { it.id == id }
         if (index < 0) return false
 
         val source = sources[index]
+        val now = System.currentTimeMillis()
         sources[index] = source.copy(
             isEnabled = enabled,
-            updatedAt = System.currentTimeMillis()
+            enabledAt = if (enabled) now else null,
+            updatedAt = now
         )
 
         if (enabled) {
@@ -214,10 +223,12 @@ class SourceManagerImpl(
     }
 
     /**
-     * 获取所有启用的播放源
+     * 获取所有启用的播放源（2.8 按启用顺序排序：先启用的优先级最高。
+     * 排序键 enabledAt，旧数据（数据库迁移前）为 null 时用 updatedAt 兜底——启用操作会更新 updatedAt）
      */
     fun getEnabledSources(): List<MusicSource> {
         return sources.filter { it.isEnabled }
+            .sortedWith(compareBy { it.enabledAt ?: it.updatedAt })
     }
 
     // ========== 播放源平台配置 ==========
@@ -254,17 +265,19 @@ class SourceManagerImpl(
 
     /**
      * 根据平台 key 返回按优先级排序的启用源列表。
-     * 优先级 = 列表顺序（加载/启用顺序，先启动的优先级最高）：
-     * 1. 精确配置了该平台的启用源（按列表顺序）
-     * 2. 未配置平台（全平台生效）的启用源
+     * 优先级 = 启用顺序（先启用的高优先级，见 getEnabledSources）；
+     * **平台配置只做过滤，不改变优先级顺序**：
+     * 仅返回「配置了该平台」或「未配置平台（全平台生效）」的启用源。
      * 播放失败时按此顺序逐个尝试下一个源（自动切换）。
      */
     fun getSourcesForPlatform(platformKey: String): List<MusicSource> {
         val enabled = getEnabledSources()
         if (enabled.isEmpty()) return emptyList()
-        val exact = enabled.filter { getSourcePlatforms(it.id).contains(platformKey) }
-        val wildcard = enabled.filter { getSourcePlatforms(it.id).isEmpty() }
-        return exact + wildcard
+        // 保持 sources 导入顺序，仅过滤出对该平台生效的源（配置了该平台 或 未配置=全平台）
+        return enabled.filter {
+            val platforms = getSourcePlatforms(it.id)
+            platforms.isEmpty() || platforms.contains(platformKey)
+        }
     }
 
     /**

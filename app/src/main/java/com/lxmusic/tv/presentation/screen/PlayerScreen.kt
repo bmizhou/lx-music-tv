@@ -1074,11 +1074,17 @@ private fun PlaylistDrawer(
     onSongSelect: (Song) -> Unit,
     onDismiss: () -> Unit
 ) {
-    // 抽屉打开时焦点落到列表第一项，保证遥控器方向键立即可用
-    val firstItemFocus = remember { FocusRequester() }
+    // 正在播放的歌曲在列表中的位置（不在列表/未播放则 -1，兜底第一项）
+    val currentIndex = playlist.indexOfFirst { it.id == currentSongId }
+
+    // 抽屉打开时：列表定位到正在播放的那首歌（而非第一首），焦点也直接落在它上面
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex.coerceAtLeast(0))
+    val currentSongFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         delay(120)
-        firstItemFocus.requestFocus()
+        // 双保险：滚动到当前歌曲（initialFirstVisibleItemIndex 首次组合已生效，此处对长列表再兜底一次）
+        listState.scrollToItem(currentIndex.coerceAtLeast(0))
+        currentSongFocus.requestFocus()
     }
 
     Box(
@@ -1104,7 +1110,7 @@ private fun PlaylistDrawer(
                 .fillMaxHeight()
                 .fillMaxWidth(0.42f)
                 // 面板几乎全透明（菠萝抽屉无背景色），列表行自身背景/文字保证可读
-                .background(Color(0x14000000))
+                .background(Color(0x34000000))
                 .padding(horizontal = 32.dp, vertical = 28.dp)
                 .clickable(enabled = false, indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, onClick = {})
         ) {
@@ -1132,7 +1138,7 @@ private fun PlaylistDrawer(
                 }
             } else {
                 LazyColumn(
-                    state = rememberLazyListState(),
+                    state = listState,
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
@@ -1142,7 +1148,7 @@ private fun PlaylistDrawer(
                             song = song,
                             index = index,
                             isCurrent = isCurrent,
-                            focusRequester = if (index == 0) firstItemFocus else null,
+                            focusRequester = if (index == currentIndex) currentSongFocus else null,
                             onClick = { onSongSelect(song) }
                         )
                     }
@@ -1174,9 +1180,9 @@ private fun DrawerSongRow(
             .background(
                 when {
                     // 遥控焦点选中：主题色浅透底（与设置页选中卡片一致，非纯色）
-                    isFocused -> LXPrimary.copy(alpha = 0.12f)
+                    isFocused -> LXPrimary.copy(alpha = 0.40f)
                     // 未选中：比全局 LXCardDark 更实的半透明黑（播放页恒暗色；卡片太透会看不清与背景的区分）
-                    else -> Color(0x991A1A1A)
+                    else -> Color(0xA51A1A1A)
                 }
             )
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)

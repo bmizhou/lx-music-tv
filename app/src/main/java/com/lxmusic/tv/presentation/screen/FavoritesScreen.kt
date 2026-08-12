@@ -223,10 +223,14 @@ fun FavoriteTabSelector(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        tabs.forEachIndexed { index, (title, icon) ->
+        tabs.forEachIndexed { index, (title, _) ->
             val isSelected = selectedTab == index
 
-            Surface(
+            // 2.8 样式改为缓存管理-清除全部同款大按钮：选中=红底白字，未选中=灰底深字
+            CacheActionButton(
+                text = title,
+                onClick = { onTabSelected(index) },
+                highlighted = isSelected,
                 modifier = Modifier
                     .weight(1f)
                     // 首个 Tab 承载「从导航栏右键进入」的焦点请求器
@@ -242,40 +246,7 @@ fun FavoriteTabSelector(
                             }
                         } else Modifier
                     )
-                    // 选中态为红底，默认红色焦点边框会"隐身"，改白色边框保证焦点清晰可见
-                    .lxSelectorFocus(focusedColor = FocusBorder, shape = RoundedCornerShape(8.dp))
-                    .clickable { onTabSelected(index) },
-                color = if (isSelected) LXPrimary else LXSurfaceVariant,
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(
-                    width = 2.dp,
-                    color = if (isSelected) LXPrimary else Color.Transparent
-                )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 12.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        // 选中态红底用白图标；未选中浅灰底用深图标
-                        tint = if (isSelected) Color.White else LXTextPrimary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = title,
-                        fontSize = 16.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        // 选中态红底用白字；未选中浅灰底用深色字
-                        color = if (isSelected) Color.White else LXTextPrimary
-                    )
-                }
-            }
+            )
         }
     }
 }

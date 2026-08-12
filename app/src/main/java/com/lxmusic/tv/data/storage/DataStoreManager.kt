@@ -69,11 +69,18 @@ class DataStoreManager(
     }
     
     /**
-     * 设置播放源启用状态
+     * 设置播放源启用状态（2.8 启用时记录 enabledAt = 启用顺序排序依据）
      */
     suspend fun setSourceEnabled(id: String, enabled: Boolean) {
         val source = musicSourceDao.getSourceById(id) ?: return
-        musicSourceDao.updateSource(source.copy(isEnabled = enabled, updatedAt = System.currentTimeMillis()))
+        val now = System.currentTimeMillis()
+        musicSourceDao.updateSource(
+            source.copy(
+                isEnabled = enabled,
+                enabledAt = if (enabled) now else null,
+                updatedAt = now
+            )
+        )
     }
     
     // ========== 音乐项相关操作 ==========
@@ -211,7 +218,8 @@ private fun MusicSourceEntity.toDomainModel(): MusicSource {
         scriptContent = scriptContent,
         isEnabled = isEnabled,
         createdAt = createdAt,
-        updatedAt = updatedAt
+        updatedAt = updatedAt,
+        enabledAt = enabledAt
     )
 }
 
@@ -226,7 +234,8 @@ private fun MusicSource.toEntity(): MusicSourceEntity {
         scriptContent = scriptContent,
         isEnabled = isEnabled,
         createdAt = createdAt,
-        updatedAt = updatedAt
+        updatedAt = updatedAt,
+        enabledAt = enabledAt
     )
 }
 

@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.Flow
         FavoritePlaylistEntity::class,
         CacheItemEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class LxMusicDatabase : RoomDatabase() {
@@ -70,6 +70,14 @@ abstract class LxMusicDatabase : RoomDatabase() {
                 )
             }
         }
+
+        // v4 → v5：music_sources 表新增 enabledAt 列（2.8 播放源优先级 = 启用顺序，
+        // 记录每次启用时间；旧数据为 NULL，排序时用 updatedAt 兜底）
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `music_sources` ADD COLUMN `enabledAt` INTEGER")
+            }
+        }
         
         fun getDatabase(context: Context): LxMusicDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -78,7 +86,7 @@ abstract class LxMusicDatabase : RoomDatabase() {
                     LxMusicDatabase::class.java,
                     "lx_music_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                 INSTANCE = instance
                 instance
@@ -101,7 +109,9 @@ data class MusicSourceEntity(
     val scriptContent: String,
     val isEnabled: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    // 2.8 启用时间（优先级 = 启用顺序）：启用时记录，禁用置 null；旧数据 null 用 updatedAt 兜底
+    val enabledAt: Long? = null
 )
 
 /**

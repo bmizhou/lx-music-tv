@@ -13,7 +13,9 @@ data class MusicSource(
     val scriptContent: String,
     val isEnabled: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    // 2.8 启用时间（优先级 = 启用顺序）：启用时记录，禁用置 null；旧数据 null 用 updatedAt 兜底
+    val enabledAt: Long? = null
 )
 
 /**

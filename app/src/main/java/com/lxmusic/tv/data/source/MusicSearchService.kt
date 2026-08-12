@@ -343,14 +343,16 @@ class MusicSearchService(
      * 是否降级/实际音质由 JS 源脚本内部决定（洛雪协议行为），应用记录请求成功的音质。
      * @param excludeSourceIds 本轮播放尝试中已失败的源 id 集合：这些源返回的 URL 已被实测无法播放（403 等），
      * 本轮按顺序继续尝试下一个源时跳过它们（下次播放重新按顺序从头尝试）
+     * @param onSourceLoadFailed 某个源解析播放 URL 失败时回调：(失败源名称, 下一个要尝试的源名称或 null)
      */
     suspend fun getMusicUrl(
         song: Song,
         quality: AudioQuality = AudioQuality.QUALITY_320K,
-        excludeSourceIds: Set<String> = emptySet()
+        excludeSourceIds: Set<String> = emptySet(),
+        onSourceLoadFailed: (failedSourceName: String, nextSourceName: String?) -> Unit = { _, _ -> }
     ): ApiResponse<MusicPlayResult> = withContext(Dispatchers.IO) {
         try {
-            val result = tryFetchUrlOnce(song, quality, excludeSourceIds)
+            val result = tryFetchUrlOnce(song, quality, excludeSourceIds, onSourceLoadFailed)
             if (result != null) {
                 ApiResponse.success(result)
             } else {
@@ -369,7 +371,8 @@ class MusicSearchService(
     private suspend fun tryFetchUrlOnce(
         song: Song,
         quality: AudioQuality,
-        excludeSourceIds: Set<String>
+        excludeSourceIds: Set<String>,
+        onSourceLoadFailed: (String, String?) -> Unit
     ): MusicPlayResult? {
         // 2.8 不缓存播放 URL：签名直链/防盗链 URL 有时效（可能数小时即失效），
         // 缓存 URL 会在过期后仍被命中导致播放失败。每次播放都重新解析拿新 URL；
@@ -380,15 +383,9 @@ class MusicSearchService(
         // 按优先级遍历启用的 JS 源（先启用/先加载的优先级最高），
         // 当前源获取失败时自动切换到下一个源尝试（传入 source.id，逐个真正尝试）
         val sourceCode = song.platform.key
-        for (source in sourceManager.getSourcesForPlatform(sourceCode)) {
-            // 跳过本轮已失败的源：上次该源返回的 URL 实际无法播放（403/404 等），
-            // 本轮继续按顺序尝试下一个源时不再试它，避免卡在同一个坏 URL 上；
-            // 失败集合仅本轮有效，下次播放重新按顺序从头尝试
-            if (source.id in excludeSourceIds) {
-                Log.w(TAG, "跳过播放失败过的源[${source.name}]")
-                continue
-            }
-            // 传入歌曲真实平台代码（kw/kg/tx/wy/mg），确保 JS 源用正确的平台请求播放地址
+        // 先过滤本轮已失败源，得到实际要尝试的候选列表（保持导入顺序），便于取「下一个源」名称
+        val candidates = sourceManager.getSourcesForPlatform(sourceCode).filter { it.id !in excludeSourceIds }
+        candidates.forEachIndexed { index, source ->
             val result = sourceManager.getMusicUrlWithSource(song.id, quality, sourceCode, source.id)
             when (result) {
                 is SourceExecutionResult.UrlSuccess -> {
@@ -398,6 +395,8 @@ class MusicSearchService(
                 }
                 is SourceExecutionResult.Error -> {
                     Log.w(TAG, "JS源[${source.name}]获取URL失败，尝试下一个源: ${result.message}")
+                    // 回调失败信息（失败源名 + 下一个要尝试的源名，没有则 null）
+                    onSourceLoadFailed(source.name, candidates.getOrNull(index + 1)?.name)
                 }
                 else -> {}
             }

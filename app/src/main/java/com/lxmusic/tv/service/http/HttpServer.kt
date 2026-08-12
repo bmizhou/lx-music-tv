@@ -583,7 +583,10 @@ class HttpServer(
      */
     private fun serveSourcesList(): Response {
         val sources = sourceManager?.getAllSources() ?: emptyList()
-        val json = sources.map { source ->
+        // 2.8 与 TV 端管理页一致：启用的源按启用顺序排前（优先级高到低），未启用的按导入顺序排后
+        val ordered = sources.filter { it.isEnabled }.sortedWith(compareBy { it.enabledAt ?: it.updatedAt }) +
+                sources.filter { !it.isEnabled }
+        val json = ordered.map { source ->
             mapOf(
                 "id" to source.id,
                 "name" to source.name,

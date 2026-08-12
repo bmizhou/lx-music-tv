@@ -72,9 +72,11 @@ fun SourceManagementScreen(
     var showDeleteDialog by remember { mutableStateOf<MusicSource?>(null) }
     // 平台配置弹窗状态：当前配置的源 + 平台选择集合
     var platformConfigSource by remember { mutableStateOf<MusicSource?>(null) }
-    // 播放源排序：启用的源排在前面（优先级从高到低），未启用的排在后面
+    // 播放源排序：启用的源按「启用顺序」排前面（优先级从高到低，先启用优先），未启用的按导入顺序排后面
     val orderedSources = remember(sources) {
-        sources.filter { it.isEnabled } + sources.filter { !it.isEnabled }
+        val enabled = sources.filter { it.isEnabled }
+            .sortedWith(compareBy { it.enabledAt ?: it.updatedAt })
+        enabled + sources.filter { !it.isEnabled }
     }
     // 进入页面时把焦点落到返回按钮，避免初始无焦点导致方向键失灵
     val backFocusRequester = remember { FocusRequester() }
@@ -163,14 +165,14 @@ fun SourceManagementScreen(
                 )
             }
 
-            // 播放源列表（启用的源按启动顺序排最前 = 优先级从高到低，未启用的排后）
+            // 播放源列表（启用的源按启用顺序排最前 = 优先级从高到低，未启用的排后）
             if (sources.isEmpty()) {
                 item { EmptyState(modifier = Modifier.fillMaxWidth().height(320.dp)) }
             } else {
-                // 说明：优先级 = 列表顺序
+                // 说明：优先级 = 启用顺序
                 item {
                     Text(
-                        text = "启用的音源按列表顺序作为播放优先级（越靠前优先级越高），播放失败会自动切换到下一个音源",
+                        text = "启用的音源按「启用顺序」作为播放优先级（越靠前优先级越高），播放失败会自动切换到下一个音源",
                         fontSize = 13.sp,
                         color = LXTextSecondary,
                         modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 2.dp)
@@ -436,53 +438,25 @@ fun SourceItem(
                 )
             }
 
-            // 第二行：平台配置 + 删除（紧凑排列）
+            // 第二行：平台配置 + 删除（2.8 改为缓存管理-清除全部同款大按钮，并排等宽）
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                OutlinedButton(
+                CacheActionButton(
+                    text = "平台配置",
+                    hint = "设置生效平台",
                     onClick = onConfigurePlatforms,
-                    modifier = Modifier
-                        .height(36.dp)
-                        // 常态透明边框，仅聚焦时亮红边框；关闭发光/动画
-                        .lxSelectorFocus(shape = RoundedCornerShape(6.dp), glow = false, animated = false),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = LXPrimary),
-                    shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(1.dp, LXPrimary.copy(alpha = 0.5f))
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Tune,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = "平台配置", fontSize = 13.sp)
-                }
-
-                Spacer(modifier = Modifier.width(10.dp))
-
-                OutlinedButton(
+                    modifier = Modifier.weight(1f)
+                )
+                CacheActionButton(
+                    text = "删除",
+                    hint = "移除该播放源",
                     onClick = onDelete,
-                    modifier = Modifier
-                        .height(36.dp)
-                        // 常态透明边框，仅聚焦时亮红边框；关闭发光/动画
-                        .lxSelectorFocus(shape = RoundedCornerShape(6.dp), glow = false, animated = false),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = LXPrimary),
-                    shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(1.dp, LXPrimary.copy(alpha = 0.5f))
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = "删除", fontSize = 13.sp)
-                }
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
     }
@@ -569,19 +543,6 @@ fun PlatformConfigDialog(
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // 平台品牌图标（与默认音乐平台弹窗一致）
-                                val platform = try {
-                                    MusicPlatform.valueOf(key.uppercase())
-                                } catch (e: Exception) {
-                                    MusicPlatform.KW
-                                }
-                                Icon(
-                                    imageVector = platformIcon(platform),
-                                    contentDescription = null,
-                                    tint = platformBrandColor(platform),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
                                 Text(
                                     text = name,
                                     fontSize = 16.sp,

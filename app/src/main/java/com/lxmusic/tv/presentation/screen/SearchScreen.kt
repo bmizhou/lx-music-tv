@@ -612,13 +612,15 @@ fun SearchTypeSelector(
         types.forEachIndexed { index, type ->
             val isSelected = searchType == type
 
-            Surface(
+            // 2.8 样式改为缓存管理-清除全部同款大按钮：选中=红底白字，未选中=灰底深字
+            CacheActionButton(
+                text = type.displayName,
+                onClick = { onTypeSelected(type) },
+                highlighted = isSelected,
                 modifier = Modifier
                     .weight(1f)
                     // focusRequester 必须在 focusable(clickable) 之前
                     .then(if (index == 0 && extraFocusRequester != null) Modifier.focusRequester(extraFocusRequester) else Modifier)
-                    // 选中态为红底，默认红色焦点边框会"隐身"，改白色边框保证焦点清晰可见
-                    .lxSelectorFocus(focusedColor = FocusBorder, shape = RoundedCornerShape(8.dp))
                     // 跟踪最右按钮焦点：仅在最后一项聚焦时上报 true，其余项聚焦上报 false，
                     // 焦点离开（失焦）时回落到 false，保证右键跨列拦截状态与实际焦点同步
                     .onFocusChanged { fs ->
@@ -628,30 +630,7 @@ fun SearchTypeSelector(
                             onFocusAtRightEdgeChange(false)
                         }
                     }
-                    // 触屏点击直接切换类型（手机/平板无遥控器方向键场景）
-                    .clickable { onTypeSelected(type) },
-                color = if (isSelected) LXPrimary else LXSurfaceVariant,
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(
-                    width = 2.dp,
-                    color = if (isSelected) LXPrimary else Color.Transparent
-                )
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = type.displayName,
-                        fontSize = 15.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        // 2.5 浅色主题：选中红底白字，未选中浅灰底深字
-                        color = if (isSelected) Color.White else LXTextPrimary
-                    )
-                }
-            }
+            )
         }
     }
 }

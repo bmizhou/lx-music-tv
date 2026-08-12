@@ -1336,7 +1336,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * @return 是否成功开始播放
      */
     private suspend fun doResolveAndPlay(song: Song, playlist: List<Song>, quality: AudioQuality): Boolean {
-        val urlResult = searchService.getMusicUrl(song, quality, tryFailedSourceIds.toSet())
+        val urlResult = searchService.getMusicUrl(
+            song, quality, tryFailedSourceIds.toSet(),
+            onSourceLoadFailed = { failedName, nextName ->
+                // 2.8 某个源解析播放 URL 失败：toast 提示（失败源 + 歌曲 + 平台 + 下一个要尝试的源）
+                val base = "「$failedName」获取${song.platform.displayName}《${song.name}》播放地址失败"
+                _toastMessage.value = if (nextName != null) "$base，尝试下一个源「$nextName」" else base
+            }
+        )
         if (urlResult.success && urlResult.data != null) {
             // 记录 URL 来源源 id：播放失败时加入黑名单，重试跳过该源
             currentPlaySourceId = urlResult.data.sourceId
@@ -1368,6 +1375,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun playPlaylist(songs: List<Song>) {
         if (songs.isEmpty()) return
         playSong(songs.first(), songs)
+    }
+
+    /**
+     * 2.8 音频缓存被清除后调用：重建播放器。
+     * 旧 ExoPlayer 持有已 release、文件已删除的 SimpleCache，不重建会导致后续播放全部失败。
+     */
+    fun notifyAudioCacheCleared() {
+        playerService?.rebuildForCacheCleared()
     }
 
     /**
@@ -1683,6 +1698,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val isFav = dataStoreManager.isFavoritePlaylist(playlist.id)
                 if (isFav) {
                     dataStoreManager.removeFavoritePlaylist(playlist.id)
+                    // 2.8 取消收藏歌单：移除该歌单的歌曲缓存保护 key（缓存管理页可清理其缓存）
+                    removeFavoritePlaylistSongKeys(playlist.id)
                     _toastMessage.value = "已取消收藏歌单"
                 } else {
                     dataStoreManager.addFavoritePlaylist(
@@ -1739,6 +1756,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (token != favoritePlaylistLoadToken) return@launch
             _favoritePlaylistSongs.value = songs
             _favoritePlaylistLoading.value = false
+            // 2.8 收藏歌单歌曲按歌单 id 累积记入持久化集合：缓存管理页「清除未收藏缓存」不清除歌单歌曲缓存；
+            // 取消收藏歌单时按 id 移除对应歌曲 key（见 toggleFavoritePlaylist）
+            recordFavoritePlaylistSongKeys(playlist.playlistId, songs)
             // 仅酷狗支持按页续拉：本页返回数>=页大小则还有下一页
             _favoritePlaylistSongsHasMore.value = playlist.platform == MusicPlatform.KG && songs.size >= 30
             if (songs.isEmpty()) {
@@ -1769,6 +1789,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _favoritePlaylistSongsHasMore.value = platform == MusicPlatform.KG && batch.size >= 30
             }
         }
+    }
+
+    /**
+     * 2.8 收藏歌单的歌曲 key 按歌单 id 分组持久化（格式 "平台key|歌曲id"，与音频缓存 key 前缀一致）。
+     * 缓存管理页「清除未收藏缓存」用此集合排除歌单歌曲，避免误删歌单歌曲缓存。
+     * 存储格式（SharedPreferences `favorite_playlist_song_map`，无 JSON 依赖）：
+     *   歌单id1|key1,key2;歌单id2|key3,key4
+     * 取消收藏歌单时按 id 移除对应分组（见 removeFavoritePlaylistSongKeys），不会残留。
+     * 上限：歌单 200 个，超出清空重建（下次打开歌单重新累积）。
+     */
+    private fun recordFavoritePlaylistSongKeys(playlistId: String, songs: List<Song>) {
+        if (songs.isEmpty()) return
+        try {
+            val prefs = app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+            val map = decodeFavoritePlaylistSongMap(prefs.getString("favorite_playlist_song_map", "") ?: "")
+            map[playlistId] = songs.map { "${it.platform.key}|${it.id}" }.toMutableSet()
+            if (map.size > 200) map.clear()
+            prefs.edit().putString("favorite_playlist_song_map", encodeFavoritePlaylistSongMap(map)).apply()
+        } catch (e: Exception) {
+            Log.e("LX-MainViewModel", "记录收藏歌单歌曲失败: ${e.message}")
+        }
+    }
+
+    /**
+     * 2.8 取消收藏歌单时：移除该歌单的歌曲 key 分组（缓存保护随之失效，清除未收藏缓存可清理）
+     */
+    private fun removeFavoritePlaylistSongKeys(playlistId: String) {
+        try {
+            val prefs = app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+            val map = decodeFavoritePlaylistSongMap(prefs.getString("favorite_playlist_song_map", "") ?: "")
+            if (map.remove(playlistId) != null) {
+                if (map.isEmpty()) {
+                    prefs.edit().remove("favorite_playlist_song_map").apply()
+                } else {
+                    prefs.edit().putString("favorite_playlist_song_map", encodeFavoritePlaylistSongMap(map)).apply()
+                }
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    /** 编码：Map<歌单id, 歌曲key集合> → "id|k1,k2;id|k3" */
+    private fun encodeFavoritePlaylistSongMap(map: Map<String, Set<String>>): String =
+        map.entries.joinToString(";") { (k, v) -> "$k|${v.joinToString(",")}" }
+
+    /** 解码：还原为 MutableMap<歌单id, MutableSet<歌曲key>> */
+    private fun decodeFavoritePlaylistSongMap(raw: String): MutableMap<String, MutableSet<String>> {
+        val map = mutableMapOf<String, MutableSet<String>>()
+        if (raw.isBlank()) return map
+        raw.split(";").forEach { entry ->
+            val parts = entry.split("|", limit = 2)
+            if (parts.size == 2 && parts[1].isNotBlank()) {
+                map[parts[0]] = parts[1].split(",").filter { it.isNotBlank() }.toMutableSet()
+            }
+        }
+        return map
     }
 
     /**

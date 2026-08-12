@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -434,10 +436,12 @@ fun NavigationSidebar(
             }
 
             // 2.8 下拉平台选择菜单（紧凑：挂在 logo 下方，宽度与 logo 一致（侧栏 72dp - 左右 6dp padding = 60dp））
+            // 2.8 背景色与操作大按钮（CacheActionButton）的灰底一致：LXSurfaceVariant
             DropdownMenu(
                 expanded = logoMenuExpanded,
                 onDismissRequest = { logoMenuExpanded = false },
-                modifier = Modifier.width(60.dp)
+                modifier = Modifier.width(60.dp),
+                containerColor = LXSurfaceVariant
             ) {
                 // 可选平台（排除本地音乐），仅显示平台短名（如 酷狗/QQ）
                 MusicPlatform.values()
@@ -2092,14 +2096,29 @@ fun CacheManageScreen(
     onBack: () -> Unit,
     // 2.8 返回按钮按「右键」→ 聚焦右上角悬浮播放球
     onFocusFloatingBall: () -> Unit = {},
+    // 2.8 音频缓存被清除后回调（用于重建播放器，避免旧 SimpleCache 失效导致播放失败）
+    onCacheCleared: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var audioSize by remember { mutableStateOf(0L) }
     var coverSize by remember { mutableStateOf(0L) }
     var lyricSize by remember { mutableStateOf(0L) }
+    // 2.8 音乐缓存开关（默认开启，SharedPreferences 持久化；与 PlayerService 共用 lx_settings）
+    var musicCacheEnabled by remember {
+        mutableStateOf(
+            try {
+                context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
+                    .getBoolean("music_cache_enabled", true)
+            } catch (e: Exception) {
+                true
+            }
+        )
+    }
     // 操作结果提示（如「已清除未收藏歌曲缓存」）
     var actionMessage by remember { mutableStateOf<String?>(null) }
+    // 2.8 是否正在清除缓存（清除中显示动画提示 + 禁用重复点击）
+    var isClearing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     // 计算缓存大小（IO 线程，目录文件多时避免卡主线程）
@@ -2112,19 +2131,40 @@ fun CacheManageScreen(
     }
     LaunchedEffect(Unit) { refreshSizes() }
 
-    // 收藏 key 集合（格式 "平台key|歌曲id"，与音频缓存 key 前缀一致）
+    // 2.8 受保护缓存 key 集合（格式 "平台key|歌曲id"，与音频缓存 key 前缀一致）：
+    // 收藏单曲 + 收藏歌单的歌曲（按歌单分组累积在 SharedPreferences，取消收藏歌单即移除）——缓存均不清除
     val favoriteKeys = remember(favorites) {
-        favorites.map { "${it.platform.key}|${it.musicId}" }.toSet()
+        val singleKeys = favorites.map { "${it.platform.key}|${it.musicId}" }.toSet()
+        val playlistKeys = try {
+            val raw = context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
+                .getString("favorite_playlist_song_map", "") ?: ""
+            if (raw.isBlank()) emptySet()
+            else raw.split(";").flatMap { entry ->
+                val parts = entry.split("|", limit = 2)
+                if (parts.size == 2) parts[1].split(",") else emptyList()
+            }.filter { it.isNotBlank() }.toSet()
+        } catch (e: Exception) {
+            emptySet()
+        }
+        singleKeys + playlistKeys
     }
 
-    // 清理动作：IO 线程执行 + 刷新大小 + 提示
-    fun doClear(label: String, action: (Context) -> Unit) {
+    // 清理动作：IO 线程执行 + 刷新大小 + 提示（2.8 清除中状态 + 防重复点击）
+    // rebuildPlayer=true 的操作为「影响音频缓存的清除」：完成后通知重建播放器，
+    // 避免旧 ExoPlayer 持有已释放/已删文件的 SimpleCache 导致后续播放全部失败。
+    // 注意：rebuildPlayer 必须在 action 之前（trailing lambda 绑定最后一个参数 = action）
+    fun doClear(label: String, rebuildPlayer: Boolean = false, action: (Context) -> Unit) {
+        if (isClearing) return
         scope.launch {
+            isClearing = true
+            actionMessage = null
             withContext(Dispatchers.IO) {
                 try { action(context) } catch (e: Exception) {}
                 refreshSizes()
             }
+            isClearing = false
             actionMessage = label
+            if (rebuildPlayer) onCacheCleared()
         }
     }
 
@@ -2197,13 +2237,32 @@ fun CacheManageScreen(
                     .padding(bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // 2.8 音乐缓存总开关（默认开启）
+                item {
+                    MusicCacheToggleCard(
+                        enabled = musicCacheEnabled,
+                        onToggle = { new ->
+                            musicCacheEnabled = new
+                            try {
+                                context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
+                                    .edit()
+                                    .putBoolean("music_cache_enabled", new)
+                                    .apply()
+                            } catch (e: Exception) {}
+                            actionMessage = if (new) "音乐缓存已开启，下次播放生效" else "音乐缓存已关闭，下次播放生效"
+                        }
+                    )
+                }
+
                 // 每种缓存一张卡片：左侧信息 + 右侧「清除」键帽
                 item {
                     CacheManageCard(
                         label = "音频缓存",
-                        hint = "播放过的歌曲文件",
+                        hint = "播放过的歌曲文件，上限 2GB，超出自动清理最久未播放的歌曲",
                         bytes = audioSize,
-                        onClear = { doClear("已清空音频缓存") { CacheManager.clearAudio(it) } }
+                        // 2.8 上限说明移入卡片内（SimpleCache LRU 淘汰）
+                        //extraHint = "上限 2GB，超出自动清理最久未播放的歌曲",
+                        onClear = { doClear("已清空音频缓存", rebuildPlayer = true) { CacheManager.clearAudio(it) } }
                     )
                 }
                 item {
@@ -2223,7 +2282,7 @@ fun CacheManageScreen(
                     )
                 }
 
-                // 底部操作区：清除未收藏缓存（主操作）+ 清除全部
+                // 底部操作区：清除未收藏缓存 + 清除全部（并排大按钮，替代原细长键帽）
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
@@ -2231,29 +2290,56 @@ fun CacheManageScreen(
                             fontSize = 12.sp,
                             color = LXTextSecondary
                         )
-                        KeyboardKey(
-                            text = "清除未收藏缓存（仅保留已收藏）",
-                            onClick = {
-                                doClear("已清除未收藏歌曲的音频缓存") {
-                                    CacheManager.clearUnfavoritedAudio(it, favoriteKeys)
-                                }
-                            },
-                            highlighted = true,
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier.fillMaxWidth()
-                        )
-                        KeyboardKey(
-                            text = "清除全部",
-                            onClick = { doClear("已清空全部缓存") { CacheManager.clearAll(it) } },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        // 操作结果提示
-                        actionMessage?.let { msg ->
-                            Text(
-                                text = msg,
-                                fontSize = 13.sp,
-                                color = LXPrimary,
-                                fontWeight = FontWeight.Medium
+                        ) {
+                            CacheActionButton(
+                                text = "清除未收藏缓存",
+                                hint = "仅保留已收藏歌曲与歌单歌曲",
+                                enabled = !isClearing,
+                                onClick = {
+                                    doClear("已清除未收藏歌曲的音频缓存", rebuildPlayer = true) {
+                                        CacheManager.clearUnfavoritedAudio(it, favoriteKeys)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
                             )
+                            CacheActionButton(
+                                text = "清除全部",
+                                hint = "音频 / 封面 / 歌词",
+                                enabled = !isClearing,
+                                onClick = { doClear("已清空全部缓存", rebuildPlayer = true) { CacheManager.clearAll(it) } },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        // 2.8 清除中提示（转圈 + 文字，淡入淡出过渡）
+                        AnimatedVisibility(visible = isClearing) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = LXPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "正在清除缓存...",
+                                    fontSize = 13.sp,
+                                    color = LXPrimary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                        // 操作结果提示（淡入淡出过渡）
+                        AnimatedVisibility(visible = actionMessage != null) {
+                            actionMessage?.let { msg ->
+                                Text(
+                                    text = msg,
+                                    fontSize = 13.sp,
+                                    color = LXPrimary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
                         }
                     }
                 }
@@ -2270,7 +2356,9 @@ private fun CacheManageCard(
     label: String,
     hint: String,
     bytes: Long,
-    onClear: () -> Unit
+    onClear: () -> Unit,
+    // 2.8 卡片内附加说明（如音频缓存上限）
+    extraHint: String? = null
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -2293,6 +2381,13 @@ private fun CacheManageCard(
                     fontSize = 12.sp,
                     color = LXOnCardDarkSecondary
                 )
+                extraHint?.let {
+                    Text(
+                        text = it,
+                        fontSize = 12.sp,
+                        color = LXOnCardDarkSecondary
+                    )
+                }
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = formatCacheSize(bytes),
@@ -2319,6 +2414,107 @@ fun formatCacheSize(bytes: Long): String {
         bytes < 1024 -> "$bytes B"
         bytes < 1024 * 1024 -> "${bytes / 1024} KB"
         else -> String.format("%.1f MB", bytes / 1024.0 / 1024.0)
+    }
+}
+
+/**
+ * 2.8 音乐缓存总开关卡片：左侧标题/说明，右侧 Switch（默认开启，SharedPreferences 持久化）
+ */
+@Composable
+private fun MusicCacheToggleCard(
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = LXCardDark),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "音乐缓存",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LXOnCardDark
+                )
+                Text(
+                    text = "开启后播放的歌曲边播边缓存到本地，下次播放免流量",
+                    fontSize = 12.sp,
+                    color = LXOnCardDarkSecondary
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = enabled,
+                onCheckedChange = onToggle,
+                colors = SwitchDefaults.colors(
+                    checkedTrackColor = LXPrimary,
+                    checkedThumbColor = Color.White
+                )
+            )
+        }
+    }
+}
+
+/**
+ * 2.8 缓存操作大按钮（并排布局，替代原细长键帽）：主标题 + 可选副说明，高 56dp 圆角 12dp。
+ * 公开组件：播放源管理（平台配置/删除）、收藏页顶部 tab（歌曲/歌单）等复用同款样式。
+ */
+@Composable
+fun CacheActionButton(
+    text: String,
+    onClick: () -> Unit,
+    hint: String? = null,
+    highlighted: Boolean = false,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val bgColor = when {
+        highlighted -> LXPrimary
+        isFocused -> LXPrimary.copy(alpha = 0.35f)
+        else -> LXSurfaceVariant
+    }
+    val textColor = if (isFocused || highlighted) Color.White else LXTextPrimary
+    val hintColor = if (isFocused || highlighted) Color.White.copy(alpha = 0.8f) else LXTextSecondary
+    val borderColor = if (isFocused) FocusBorder else Color.Transparent
+
+    Box(
+        modifier = modifier
+            .height(56.dp)
+            .onFocusChanged { isFocused = it.isFocused }
+            .clip(RoundedCornerShape(12.dp))
+            .background(bgColor)
+            .border(if (isFocused) 3.dp else 0.dp, borderColor, RoundedCornerShape(12.dp))
+            // 清除中禁用：不可点击 + 半透明置灰
+            .alpha(if (enabled) 1f else 0.4f)
+            .clickable(enabled = enabled) { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                color = textColor,
+                maxLines = 1
+            )
+            hint?.let {
+                Text(
+                    text = it,
+                    fontSize = 11.sp,
+                    color = hintColor,
+                    maxLines = 1
+                )
+            }
+        }
     }
 }
 
@@ -2485,13 +2681,6 @@ fun PlatformSelectDialog(
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = platformIcon(platform),
-                                contentDescription = null,
-                                tint = platformBrandColor(platform),
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = platform.displayName,
                                 fontSize = 16.sp,
