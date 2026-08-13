@@ -122,6 +122,12 @@ fun LXMusicApp() {
     //（悬浮层不与内容区做空间焦点竞争，方向键自然导航到不了，需显式桥接）
     val floatingBallRequester = remember { FocusRequester() }
 
+    // 2.8 同步当前导航路由到 VM：Web 端搜索推送/清空仅在「主页（main）的搜索 tab」生效，
+    // 搜索结果页（search_result）等独立路由不生效
+    LaunchedEffect(currentRoute) {
+        viewModel.setCurrentRoute(currentRoute ?: "main")
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
     NavHost(
         navController = navController,
@@ -151,6 +157,7 @@ fun LXMusicApp() {
             val searchQuery by viewModel.searchQuery.collectAsState()
             val searchPlatform by viewModel.searchPlatform.collectAsState()
             val searchType by viewModel.searchType.collectAsState()
+            val serverUrl by viewModel.serverUrl.collectAsState()
             val hotKeywords by viewModel.hotKeywords.collectAsState()
             val suggestions by viewModel.suggestions.collectAsState()
             val hotSongs by viewModel.hotSongs.collectAsState()
@@ -316,7 +323,13 @@ fun LXMusicApp() {
                 // 搜索历史（输入为空时中间列展示；清空按钮）
                 searchHistory = searchHistory,
                 onClearSearchHistory = { viewModel.clearSearchHistory() },
+                // 2.8 搜索页扫码推送弹窗需要服务器地址
+                serverUrl = serverUrl,
+                // 2.8 二维码按钮：HTTP 未开启时询问是否启用
+                onEnableServer = { viewModel.startServer() },
                 onTabSelected = { newTab ->
+                    // 2.8 同步当前 tab 到 VM：Web 端搜索推送/清空仅在搜索页（3）生效
+                    viewModel.setCurrentTab(newTab)
                     // 重复点击当前 tab → 触发刷新（歌单/排行重置滚动并重新加载）
                     if (newTab == homeTab) {
                         tabRefreshTick++
@@ -348,6 +361,7 @@ fun LXMusicApp() {
             val searchQuery by viewModel.searchQuery.collectAsState()
             val searchPlatform by viewModel.searchPlatform.collectAsState()
             val searchType by viewModel.searchType.collectAsState()
+            val serverUrl by viewModel.serverUrl.collectAsState()
             val searchTriggered by viewModel.searchTriggered.collectAsState()
             val playlistResults by viewModel.playlistResults.collectAsState()
             val playlistSongs by viewModel.playlistSongs.collectAsState()

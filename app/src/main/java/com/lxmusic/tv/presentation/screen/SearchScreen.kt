@@ -2,6 +2,7 @@ package com.lxmusic.tv.presentation.screen
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.border
@@ -24,6 +25,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
@@ -48,6 +50,7 @@ import com.lxmusic.tv.presentation.theme.LXOnCardDark
 import com.lxmusic.tv.presentation.theme.LXOnCardDarkSecondary
 import com.lxmusic.tv.presentation.theme.LXSurfaceMain
 import com.lxmusic.tv.presentation.theme.LXSurfaceCard
+import com.lxmusic.tv.presentation.theme.LXSurfaceDialog
 import com.lxmusic.tv.presentation.theme.LXSurfaceVariant
 import com.lxmusic.tv.presentation.theme.LXTextPrimary
 import com.lxmusic.tv.presentation.theme.LXTextSecondary
@@ -145,8 +148,25 @@ fun SearchScreen(
     onClearSearchHistory: () -> Unit = {},
     // 导航栏右键进入搜索页时聚焦内容首项（2.6 搜索内嵌为 tab）
     contentEnterRequester: FocusRequester? = null,
+    // 2.8 HTTP 服务器地址（扫码推送弹窗显示 /search 地址 + 二维码；null=未开启服务器）
+    serverUrl: String? = null,
+    // 2.8 HTTP 未开启时点二维码 → 询问是否启用（调用方负责启动服务器，如 viewModel.startServer）
+    onEnableServer: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    // 2.8 扫码推送弹窗开关
+    var showQrDialog by remember { mutableStateOf(false) }
+    // 2.8 HTTP 未启用询问弹窗开关
+    var showEnableServerDialog by remember { mutableStateOf(false) }
+    // 2.8 是否在等待服务器启动后自动弹二维码（用户在询问弹窗点了「开启」）
+    var pendingQrAfterServerStart by remember { mutableStateOf(false) }
+    // 2.8 服务器启动完成（serverUrl 变为非空）→ 自动弹出二维码
+    LaunchedEffect(serverUrl) {
+        if (serverUrl != null && pendingQrAfterServerStart) {
+            pendingQrAfterServerStart = false
+            showQrDialog = true
+        }
+    }
     // 2.6 搜索页内嵌为 tab 后与其它页面一致：不再接管返回键，
     // 由主页统一逻辑处理（焦点回侧栏选中 tab → 再按返回弹退出确认）。
 
@@ -216,34 +236,122 @@ fun SearchScreen(
                     // 搜索词展示框（纯展示，不可聚焦）：
                     // 输入全部由下方小键盘驱动，不放在 TextField 里——聚焦的 TextField 会建立
                     // IME 连接，遥控器返回键会被系统输入法逻辑在 Compose 之前吞掉，导致无法退出搜索页
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            // 2.5 浅色主题：白底 + 浅边框
-                            .background(LXSurfaceCard)
-                            .border(2.dp, LXBorder, RoundedCornerShape(12.dp))
-                            .padding(horizontal = 16.dp, vertical = 18.dp)
+                    // 2.8 输入框缩窄（weight 0.7）+ 右侧二维码推送按钮（扫码用手机推文字到输入框）
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Search,
-                                contentDescription = "搜索",
-                                tint = LXTextSecondary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = searchQuery.ifBlank {
-                                    if (searchType == SearchType.PLAYLIST) "输入歌单关键词..." else "输入歌曲名、歌手或专辑..."
+                        Box(
+                            modifier = Modifier
+                                .weight(0.7f)
+                                .clip(RoundedCornerShape(12.dp))
+                                // 2.5 浅色主题：白底 + 浅边框
+                                .background(LXSurfaceCard)
+                                .border(2.dp, LXBorder, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 16.dp, vertical = 18.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "搜索",
+                                    tint = LXTextSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = searchQuery.ifBlank {
+                                        // 2.8 文案缩短：输入框缩窄后原文案放不下（Ellipsis 截断）
+                                        if (searchType == SearchType.PLAYLIST) "输入歌单关键词" else "输入歌曲名/歌手"
+                                    },
+                                    fontSize = 16.sp,
+                                    // 2.5 浅色主题：浅色背景上深色文字，空白用次文字提示
+                                    color = if (searchQuery.isBlank()) LXTextSecondary else LXTextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        // 二维码推送按钮：扫码打开 /search 页，手机输入文字推送到输入框（解决 TV 输入困难）。
+                        // 2.8 样式与小键盘按键完全一致：未聚焦灰底无边框，聚焦红底 0.35 + 3dp 焦点边框；
+                        // 未开启服务器时询问是否启用
+                        var qrBtnFocused by remember { mutableStateOf(false) }
+                        Box(
+                            modifier = Modifier
+                                .size(58.dp)
+                                .onFocusChanged { qrBtnFocused = it.isFocused }
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (qrBtnFocused) LXPrimary.copy(alpha = 0.35f) else LXSurfaceVariant
+                                )
+                                .border(
+                                    width = if (qrBtnFocused) 3.dp else 0.dp,
+                                    color = if (qrBtnFocused) FocusBorder else Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .clickable {
+                                    if (serverUrl != null) {
+                                        showQrDialog = true
+                                    } else {
+                                        // 2.8 HTTP 未开启：先询问是否启用，启用成功后自动弹二维码
+                                        showEnableServerDialog = true
+                                    }
                                 },
-                                fontSize = 16.sp,
-                                // 2.5 浅色主题：浅色背景上深色文字，空白用次文字提示
-                                color = if (searchQuery.isBlank()) LXTextSecondary else LXTextPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QrCode,
+                                contentDescription = "扫码推送搜索文字",
+                                tint = if (qrBtnFocused) Color.White else LXTextPrimary,
+                                modifier = Modifier.size(30.dp)
                             )
                         }
+                    }
+
+                    // 2.8 HTTP 未启用询问弹窗：确认后启动服务器（onEnableServer），
+                    // 启动完成 serverUrl 更新 → LaunchedEffect 自动弹出二维码
+                    if (showEnableServerDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showEnableServerDialog = false },
+                            containerColor = LXSurfaceDialog,
+                            title = {
+                                Text(
+                                    text = "开启 HTTP 服务器？",
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = LXTextPrimary
+                                )
+                            },
+                            text = {
+                                Text(
+                                    text = "扫码推送需要 HTTP 服务器支持。开启后手机/电脑打开 /search 页面，即可输入文字推送到电视搜索框。",
+                                    fontSize = 14.sp,
+                                    color = LXTextSecondary
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showEnableServerDialog = false
+                                    pendingQrAfterServerStart = true
+                                    onEnableServer()
+                                }) {
+                                    Text("开启", color = LXPrimary, fontWeight = FontWeight.Bold)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showEnableServerDialog = false }) {
+                                    Text("取消", color = LXTextSecondary)
+                                }
+                            }
+                        )
+                    }
+
+                    // 2.8 扫码推送弹窗：显示 /search 地址 + 二维码（需开启 HTTP 服务器）
+                    if (showQrDialog) {
+                        SearchQrDialog(
+                            serverUrl = serverUrl,
+                            onDismiss = { showQrDialog = false }
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -1417,3 +1525,87 @@ fun HotSearchItem(
     }
 }
 
+
+/**
+ * 2.8 扫码推送搜索文字弹窗：显示 /search 地址 + 二维码。
+ * 手机/电脑扫码打开页面 → 输入文字 → 推送到 TV 搜索输入框（需开启 HTTP 服务器）。
+ */
+@Composable
+private fun SearchQrDialog(
+    serverUrl: String?,
+    onDismiss: () -> Unit
+) {
+    val pushUrl = serverUrl?.let { "$it/search" } ?: "需先开启 HTTP 服务器"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LXSurfaceDialog,
+        title = {
+            Text(
+                text = "扫码推送搜索文字",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = LXTextPrimary
+            )
+        },
+        text = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = "手机/电脑打开下方页面，输入文字即可推送到电视搜索框，解决遥控器输入困难",
+                    fontSize = 13.sp,
+                    color = LXTextSecondary
+                )
+                if (serverUrl != null) {
+                    val qr = generateQrCode(pushUrl, 300)
+                    if (qr != null) {
+                        Image(
+                            bitmap = qr,
+                            contentDescription = "搜索推送二维码",
+                            modifier = Modifier.size(280.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = pushUrl,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LXPrimary
+                )
+                Text(
+                    text = "需先在设置中开启 HTTP 服务器；地址为电视当前局域网 IP",
+                    fontSize = 12.sp,
+                    color = LXTextSecondary
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭", color = LXTextSecondary)
+            }
+        },
+        dismissButton = {}
+    )
+}
+
+/**
+ * 2.8 生成二维码 ImageBitmap（zxing core，纯本地编码）
+ */
+private fun generateQrCode(content: String, size: Int = 300): androidx.compose.ui.graphics.ImageBitmap? {
+    return try {
+        val hints = mapOf(com.google.zxing.EncodeHintType.MARGIN to 1)
+        val matrix = com.google.zxing.qrcode.QRCodeWriter()
+            .encode(content, com.google.zxing.BarcodeFormat.QR_CODE, size, size, hints)
+        val pixels = IntArray(size * size)
+        for (y in 0 until size) {
+            for (x in 0 until size) {
+                pixels[y * size + x] = if (matrix.get(x, y)) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+            }
+        }
+        android.graphics.Bitmap.createBitmap(pixels, size, size, android.graphics.Bitmap.Config.ARGB_8888)
+            .asImageBitmap()
+    } catch (e: Exception) {
+        null
+    }
+}

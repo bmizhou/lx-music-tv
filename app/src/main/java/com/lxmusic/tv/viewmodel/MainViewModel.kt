@@ -110,6 +110,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // 搜索页状态提升到 ViewModel，保证从播放页返回后搜索词/平台/触发状态不丢失
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+    // 2.8 当前主页 tab（侧栏索引；搜索页 = 3）。Web 端搜索推送/清空仅在搜索页生效
+    private val _currentTab = MutableStateFlow(0)
+    val currentTab: StateFlow<Int> = _currentTab.asStateFlow()
+    // 2.8 当前导航路由（MainActivity 同步）：搜索结果页等独立路由时 Web 推送不生效
+    private val _currentRoute = MutableStateFlow("main")
+    val currentRoute: StateFlow<String> = _currentRoute.asStateFlow()
     private val _searchPlatform = MutableStateFlow(MusicPlatform.TX)
     val searchPlatform: StateFlow<MusicPlatform> = _searchPlatform.asStateFlow()
     private val _searchTriggered = MutableStateFlow(false)
@@ -336,6 +342,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // 启动进度更新协程
         startProgressUpdater()
+
+        // 2.8 恢复 HTTP 服务器上次状态：开启过则应用启动时自动开启（记住用户选择）
+        if (loadHttpServerEnabled()) {
+            startServer()
+        }
     }
 
     // ========== 播放源管理 ==========
@@ -426,6 +437,87 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ========== HTTP服务器 ==========
 
+    /** 2.8 搜索页在侧栏的 tab 索引（0歌单/1排行/2收藏/3搜索/4设置），Web 推送/清空仅搜索页生效 */
+    private val SEARCH_TAB_INDEX = 3
+
+    /**
+     * 2.8 主页 tab 切换同步（MainActivity onTabSelected 调用）：Web 端推送只在搜索页生效
+     */
+    fun setCurrentTab(tab: Int) {
+        _currentTab.value = tab
+    }
+
+    /**
+     * 2.8 当前导航路由同步（MainActivity NavHost 监听）：搜索结果页等独立路由时推送不生效
+     */
+    fun setCurrentRoute(route: String) {
+        _currentRoute.value = route
+    }
+
+    /**
+     * 2.8 Web 推送/清空是否生效：必须处于「主页（main）的搜索 tab」——
+     * 搜索结果页（search_result）、设置页等独立路由或非搜索 tab 均不生效
+     */
+    private fun webActionActive(): Boolean =
+        _currentRoute.value == "main" && _currentTab.value == SEARCH_TAB_INDEX
+
+    /**
+     * 2.8 HTTP 服务器开启状态持久化（记住用户选择，下次启动自动恢复）
+     */
+    private fun saveHttpServerEnabled(enabled: Boolean) {
+        try {
+            app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("http_server_enabled", enabled)
+                .apply()
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun loadHttpServerEnabled(): Boolean {
+        return try {
+            app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .getBoolean("http_server_enabled", false)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 2.8 Web 端（/search 页）推送的搜索文字：更新输入框 + 按当前搜索类型触发搜索，
+     * 等价于用户在小键盘输入后按「搜索」键（HttpServer 回调线程 → 主线程执行）。
+     * 仅在应用处于搜索页时生效（_currentTab == 3）；且不写入搜索历史
+     * （历史需用户用遥控器点「搜索」键才记录，见 search/searchPlaylist 的 recordHistory）。
+     */
+    private fun onWebSearchText(text: String) {
+        val keyword = text.trim()
+        if (keyword.isEmpty()) return
+        if (!webActionActive()) {
+            Log.w("LX-MainViewModel", "Web推送忽略：不在主页搜索页（route=${_currentRoute.value}, tab=${_currentTab.value}）")
+            return
+        }
+        viewModelScope.launch {
+            updateSearchQuery(keyword)
+            when (_searchType.value) {
+                SearchType.SONG -> search(keyword, _searchPlatform.value, recordHistory = false)
+                SearchType.PLAYLIST -> searchPlaylist(keyword, _searchPlatform.value, recordHistory = false)
+            }
+        }
+    }
+
+    /**
+     * 2.8 Web 端清空搜索框：仅在应用处于主页搜索页时生效
+     */
+    private fun onWebClearSearch() {
+        if (!webActionActive()) {
+            Log.w("LX-MainViewModel", "Web清空忽略：不在主页搜索页（route=${_currentRoute.value}, tab=${_currentTab.value}）")
+            return
+        }
+        viewModelScope.launch {
+            updateSearchQuery("")
+        }
+    }
+
     /**
      * 启动HTTP服务器
      */
@@ -440,6 +532,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 httpServer = HttpServer(app)
                 httpServer?.setSourceManager(sourceManager)
                 httpServer?.setPlaylistManager(playlistManager)
+                // 2.8 Web 端搜索推送：/search 页提交 → 更新 TV 搜索输入框并触发搜索
+                httpServer?.onSearchText = { text -> onWebSearchText(text) }
+                // 2.8 Web 端清空搜索框
+                httpServer?.onClearSearch = { onWebClearSearch() }
                 httpServer?.start()
 
                 // 等待一小段时间确认服务器真正启动
@@ -450,6 +546,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _serverUrl.value = httpServer?.getAccessUrl()
                         _toastMessage.value = "服务器已启动"
                     }
+                    // 2.8 记住开启状态：下次启动自动开启
+                    saveHttpServerEnabled(true)
                 } else {
                     withContext(Dispatchers.Main) {
                         _serverRunning.value = false
@@ -480,6 +578,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _serverUrl.value = null
                     _toastMessage.value = "服务器已停止"
                 }
+                // 2.8 记住关闭状态：下次启动不自动开启
+                saveHttpServerEnabled(false)
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     _toastMessage.value = "服务器停止失败: ${e.message}"
@@ -768,15 +868,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 搜索音乐
      */
-    fun search(keyword: String, platform: MusicPlatform = _defaultPlatform.value, page: Int = 1, pageSize: Int = 30) {
+    fun search(keyword: String, platform: MusicPlatform = _defaultPlatform.value, page: Int = 1, pageSize: Int = 30, recordHistory: Boolean = true) {
         if (keyword.isBlank()) return
 
         _searchQuery.value = keyword
         _searchPlatform.value = platform
         _searchTriggered.value = true
         _playlistResults.value = emptyList()
-        // 仅新搜索（第一页）记录历史；分页续拉不重复记录
-        if (page == 1) addSearchHistory(keyword)
+        // 仅新搜索（第一页）记录历史；分页续拉不重复记录。
+        // 2.8 recordHistory=false：Web 端推送的搜索不记历史（需用户遥控器点「搜索」键才记）
+        if (page == 1 && recordHistory) addSearchHistory(keyword)
 
         viewModelScope.launch {
             _isSearching.value = true
@@ -808,7 +909,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 搜索歌单（按平台调用内置歌单搜索接口）
      */
-    fun searchPlaylist(keyword: String, platform: MusicPlatform = _defaultPlatform.value, page: Int = 1, pageSize: Int = 30) {
+    fun searchPlaylist(keyword: String, platform: MusicPlatform = _defaultPlatform.value, page: Int = 1, pageSize: Int = 30, recordHistory: Boolean = true) {
         if (keyword.isBlank()) return
 
         _searchQuery.value = keyword
@@ -818,8 +919,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _playlistSongs.value = null
         _isPlaylistSongsLoading.value = false
         _playlistSongsError.value = null
-        // 仅新搜索（第一页）记录历史；分页续拉不重复记录
-        if (page == 1) addSearchHistory(keyword)
+        // 仅新搜索（第一页）记录历史；分页续拉不重复记录。
+        // 2.8 recordHistory=false：Web 端推送的搜索不记历史（需用户遥控器点「搜索」键才记）
+        if (page == 1 && recordHistory) addSearchHistory(keyword)
 
         viewModelScope.launch {
             _isSearching.value = true

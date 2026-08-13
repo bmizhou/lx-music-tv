@@ -29,6 +29,10 @@ class HttpServer(
     private var sourceManager: SourceManager? = null
     private var playlistManager: PlaylistManager? = null
     private val scriptParser = ScriptParser()
+    // 2.8 Web 端推送搜索文字回调（/api/search 收到文字后调用，主线程由调用方自行调度）
+    var onSearchText: ((String) -> Unit)? = null
+    // 2.8 Web 端清空搜索框回调（/api/search/clear 调用）
+    var onClearSearch: (() -> Unit)? = null
 
     /**
      * 设置播放源管理器
@@ -108,6 +112,10 @@ class HttpServer(
             uri == "/api/sources/platforms" && method == Method.POST -> handleSetSourcePlatforms(session)
             // Web 端添加收藏歌单（输入歌单链接）
             uri == "/api/playlists/add" && method == Method.POST -> handleAddPlaylist(session)
+            // 2.8 Web 端扫码推送搜索文字（/search 页提交）→ 推送到 TV 搜索输入框
+            uri == "/search" -> serveSearchPage()
+            uri == "/api/search" && method == Method.POST -> handleSearchSubmit(session)
+            uri == "/api/search/clear" && method == Method.POST -> handleSearchClear()
             uri == "/api/status" -> serveStatus()
             uri.startsWith("/static/") -> serveStaticFile(uri)
             else -> serveNotFound()
@@ -744,6 +752,93 @@ class HttpServer(
             Log.w(TAG, "Web添加歌单失败: url=$url, 结果=$result")
             createErrorResponse(result?.message ?: "添加失败：歌单管理器未初始化")
         }
+    }
+
+    /**
+     * 2.8 Web 端搜索推送页（/search）：手机/PC 浏览器输入文字 → 推送到 TV 搜索输入框。
+     * 与源管理页面（/）分离，扫码直达本页。
+     */
+    private fun serveSearchPage(): Response {
+        val html = """
+            <!DOCTYPE html>
+            <html lang="zh-CN">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>搜索推送 - TV</title>
+                <style>
+                    body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background:#f5f5f7; margin:0; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+                    .card { background:#fff; border-radius:16px; padding:32px 36px; width:min(520px, 90vw); box-shadow:0 8px 30px rgba(0,0,0,.08); text-align:center; }
+                    h1 { font-size:22px; margin:0 0 6px; color:#1d1d1f; }
+                    p { color:#86868b; font-size:14px; margin:0 0 20px; }
+                    input { width:100%; box-sizing:border-box; padding:14px 16px; font-size:18px; border:2px solid #d2d2d7; border-radius:10px; outline:none; }
+                    input:focus { border-color:#e94560; }
+                    button { margin-top:16px; width:100%; padding:14px; font-size:17px; font-weight:600; color:#fff; background:#e94560; border:none; border-radius:10px; cursor:pointer; }
+                    button:active { opacity:.8; }
+                    .tip { margin-top:14px; font-size:13px; color:#86868b; }
+                    .ok { color:#0a7a3d; }
+                    .err { color:#c41d1d; }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h1>搜索推送</h1>
+                    <p>输入内容推送到电视端搜索框</p>
+                    <input id="kw" type="text" placeholder="输入歌曲名、歌手、歌单关键词..." maxlength="40" autofocus>
+                    <button id="btn" onclick="send()">推送到电视</button>
+                    <button id="clr" style="margin-top:10px;background:#86868b;" onclick="clearKw()">清空电视搜索框</button>
+                    <div class="tip" id="msg"></div>
+                </div>
+                <script>
+                    async function send() {
+                        var v = document.getElementById('kw').value.trim();
+                        var msg = document.getElementById('msg');
+                        if (!v) { msg.textContent = '请输入内容'; msg.className = 'tip err'; return; }
+                        msg.textContent = '发送中...'; msg.className = 'tip';
+                        try {
+                            var r = await fetch('/api/search', { method: 'POST', body: 'text=' + encodeURIComponent(v), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+                            var j = await r.json();
+                            if (j.success) { msg.textContent = '已推送到电视 ✓'; msg.className = 'tip ok'; document.getElementById('kw').value = ''; document.getElementById('kw').focus(); }
+                            else { msg.textContent = '推送失败：' + (j.message || '未知错误'); msg.className = 'tip err'; }
+                        } catch (e) { msg.textContent = '网络错误'; msg.className = 'tip err'; }
+                    }
+                    async function clearKw() {
+                        var msg = document.getElementById('msg');
+                        msg.textContent = '清空中...'; msg.className = 'tip';
+                        try {
+                            var r = await fetch('/api/search/clear', { method: 'POST' });
+                            var j = await r.json();
+                            msg.textContent = j.success ? '已清空电视搜索框 ✓' : '清空失败：' + (j.message || '未知错误');
+                            msg.className = j.success ? 'tip ok' : 'tip err';
+                        } catch (e) { msg.textContent = '网络错误'; msg.className = 'tip err'; }
+                    }
+                    document.getElementById('kw').addEventListener('keydown', function(e) { if (e.key === 'Enter') send(); });
+                </script>
+            </body>
+            </html>
+        """.trimIndent()
+        return newFixedLengthResponse(Response.Status.OK, "text/html; charset=UTF-8", html)
+    }
+
+    /**
+     * 2.8 接收 Web 端推送的搜索文字（POST /api/search，body: text=关键词）
+     */
+    private fun handleSearchSubmit(session: IHTTPSession): Response {
+        val params = parsePostParams(session)
+        val text = params["text"]?.trim() ?: return createErrorResponse("缺少搜索文字")
+        if (text.isEmpty()) return createErrorResponse("搜索文字不能为空")
+        Log.d(TAG, "Web推送搜索文字: $text")
+        onSearchText?.invoke(text)
+        return createSuccessResponse("已推送到电视")
+    }
+
+    /**
+     * 2.8 清空 TV 搜索框（POST /api/search/clear）
+     */
+    private fun handleSearchClear(): Response {
+        Log.d(TAG, "Web清空搜索框")
+        onClearSearch?.invoke()
+        return createSuccessResponse("已清空")
     }
 
     /**

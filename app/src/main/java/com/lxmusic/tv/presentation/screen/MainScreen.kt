@@ -159,6 +159,10 @@ fun MainScreen(
     onSearchPlaylist: (String, MusicPlatform) -> Unit = { _, _ -> },
     onSearchTypeChange: (SearchType) -> Unit = {},
     onClearSearchHistory: () -> Unit = {},
+    // 2.8 HTTP 服务器地址（搜索页扫码推送弹窗用；null=未开启服务器）
+    serverUrl: String? = null,
+    // 2.8 HTTP 未开启时点二维码 → 询问是否启用（调用方负责启动服务器）
+    onEnableServer: () -> Unit = {},
     // 当前选中 tab（由外部持有，导航子页面后返回时保持 tab 不重置）
     selectedTab: Int = 0,
     onTabSelected: (Int) -> Unit = {},
@@ -292,6 +296,9 @@ fun MainScreen(
                 onSearchPlaylist = onSearchPlaylist,
                 onSearchTypeChange = onSearchTypeChange,
                 onClearSearchHistory = onClearSearchHistory,
+                // 2.8 搜索页扫码推送弹窗需要服务器地址
+                serverUrl = serverUrl,
+                onEnableServer = onEnableServer,
                 defaultPlatform = defaultPlatform,
                 onDefaultPlatformChange = onDefaultPlatformChange,
                 preferredQuality = preferredQuality,
@@ -719,6 +726,10 @@ fun MainContent(
     onSearchPlaylist: (String, MusicPlatform) -> Unit = { _, _ -> },
     onSearchTypeChange: (SearchType) -> Unit = {},
     onClearSearchHistory: () -> Unit = {},
+    // 2.8 HTTP 服务器地址（搜索页扫码推送弹窗用；null=未开启服务器）
+    serverUrl: String? = null,
+    // 2.8 HTTP 未开启时点二维码 → 询问是否启用（调用方负责启动服务器）
+    onEnableServer: () -> Unit = {},
     defaultPlatform: MusicPlatform = MusicPlatform.KW,
     onDefaultPlatformChange: (MusicPlatform) -> Unit = {},
     preferredQuality: AudioQuality = AudioQuality.QUALITY_320K,
@@ -856,6 +867,9 @@ fun MainContent(
                 onSearchPlaylist = onSearchPlaylist,
                 onSearchTypeChange = onSearchTypeChange,
                 onClearSearchHistory = onClearSearchHistory,
+                // 2.8 扫码推送弹窗需要服务器地址
+                serverUrl = serverUrl,
+                onEnableServer = onEnableServer,
                 // 导航栏右键进入搜索页 → 聚焦类型选择器首项
                 contentEnterRequester = contentEnterRequester,
                 modifier = Modifier.fillMaxSize()

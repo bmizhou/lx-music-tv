@@ -14,8 +14,8 @@ android {
         applicationId = "com.lxmusic.tv"
         minSdk = 23
         targetSdk = 37
-        versionCode = 212
-        versionName = "2.8.202608130105"
+        versionCode = 217
+        versionName = "2.8.202608131525"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -82,6 +82,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
     implementation("androidx.activity:activity-compose:1.9.3")
+    // 二维码生成（搜索页扫码推送文字，2.8）
+    implementation("com.google.zxing:core:3.5.3")
 
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
