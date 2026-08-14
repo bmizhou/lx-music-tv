@@ -112,7 +112,7 @@ class SourceExecutor(
                     SourceExecutionResult.Error("执行播放源脚本失败: ${result.message}")
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "初始化播放源异常", e)
             SourceExecutionResult.Error("初始化播放源时出错: ${e.message}")
         }
@@ -126,7 +126,7 @@ class SourceExecutor(
             val names = mutableListOf<String>()
             if (javaScriptEngine.getEventHandler("request") != null) names.add("request")
             names.joinToString(", ").ifEmpty { "无" }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             "获取失败"
         }
     }
@@ -157,7 +157,7 @@ class SourceExecutor(
                 Log.w(TAG, "inited 数据中没有 sources 字段")
                 Log.w(TAG, "  inited 数据: ${data.toString().take(200)}")
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "解析 inited 数据失败: ${e.message}", e)
         }
     }
@@ -191,7 +191,7 @@ class SourceExecutor(
                     SourceExecutionResult.Error("搜索失败: ${searchResult.message}")
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             SourceExecutionResult.Error("搜索音乐时出错: ${e.message}")
         }
     }
@@ -208,13 +208,16 @@ class SourceExecutor(
     suspend fun getMusicUrl(
         musicId: String,
         quality: AudioQuality = AudioQuality.QUALITY_128K,
-        source: String = "kw"
+        source: String = "kw",
+        // 2.8 歌曲信息：JS 源（尤其按歌名搜索的源）需要 name/singer，缺失报「没歌名搜不了」
+        songName: String = "",
+        singer: String = ""
     ): SourceExecutionResult = withContext(Dispatchers.IO) {
         try {
             Log.i(TAG, "获取播放URL: musicId=$musicId, quality=${quality.key}")
 
             if (useEventDrivenModel) {
-                return@withContext dispatchMusicUrlRequest(musicId, quality, source)
+                return@withContext dispatchMusicUrlRequest(musicId, quality, source, songName, singer)
             }
 
             // 传统函数模式
@@ -237,7 +240,7 @@ class SourceExecutor(
                     SourceExecutionResult.Error("获取播放URL失败: ${urlResult.message}")
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取播放URL异常", e)
             SourceExecutionResult.Error("获取播放URL时出错: ${e.message}")
         }
@@ -257,13 +260,16 @@ class SourceExecutor(
     private suspend fun dispatchMusicUrlRequest(
         musicId: String,
         quality: AudioQuality,
-        source: String = "kw"
+        source: String = "kw",
+        songName: String = "",
+        singer: String = ""
     ): SourceExecutionResult = withContext(Dispatchers.IO) {
         try {
             Log.i(TAG, "[dispatchMusicUrlRequest] 开始派发 musicUrl 请求")
             Log.i(TAG, "  musicId: $musicId")
             Log.i(TAG, "  quality: ${quality.key}")
             Log.i(TAG, "  source: $source")
+            Log.i(TAG, "  songName: $songName, singer: $singer")
 
             // 构造 musicInfo 对象
             // 参考 lx-music-desktop: info.musicInfo 包含 songmid, hash 等字段
@@ -278,6 +284,10 @@ class SourceExecutor(
                     put("musicInfo", JSONObject().apply {
                         put("songmid", pureId)
                         put("hash", pureId)
+                        // 2.8 补歌曲信息：部分源（如听音音源）按歌名搜索，缺失报「没歌名搜不了」
+                        if (songName.isNotEmpty()) put("name", songName)
+                        if (singer.isNotEmpty()) put("singer", singer)
+                        put("albumName", "")
                     })
                 })
             }
@@ -302,7 +312,7 @@ class SourceExecutor(
                     SourceExecutionResult.Error("获取播放URL失败: ${result.message}")
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "[dispatchMusicUrlRequest] 异常", e)
             SourceExecutionResult.Error("获取播放URL时出错: ${e.message}")
         }
@@ -315,17 +325,26 @@ class SourceExecutor(
      * - 事件驱动模式下向源派发 { action: 'lyric', source, info: { musicInfo } } 请求，
      *   支持歌词的源返回 LRC 文本；不支持的源返回错误，由调用方 fallback 内置 API
      */
-    suspend fun getLyric(musicId: String): SourceExecutionResult = withContext(Dispatchers.IO) {
+    suspend fun getLyric(
+        musicId: String,
+        // 2.8 补平台/歌名/歌手：歌词事件此前硬编码 source=kw 且缺 name，JS 源歌词全部失败
+        source: String = "kw",
+        songName: String = "",
+        singer: String = ""
+    ): SourceExecutionResult = withContext(Dispatchers.IO) {
         try {
             if (useEventDrivenModel) {
                 // 构造 lyric 请求事件（参考 lx-music handleRequest）
                 val eventData = JSONObject().apply {
-                    put("source", "kw")
+                    put("source", source)
                     put("action", "lyric")
                     put("info", JSONObject().apply {
                         put("musicInfo", JSONObject().apply {
                             put("songmid", musicId)
                             put("hash", musicId)
+                            if (songName.isNotEmpty()) put("name", songName)
+                            if (singer.isNotEmpty()) put("singer", singer)
+                            put("albumName", "")
                         })
                     })
                 }
@@ -358,7 +377,7 @@ class SourceExecutor(
                     SourceExecutionResult.Error("获取歌词失败: ${lyricResult.message}")
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             SourceExecutionResult.Error("获取歌词时出错: ${e.message}")
         }
     }
@@ -385,7 +404,7 @@ class SourceExecutor(
                     SourceExecutionResult.Error("获取专辑封面失败: ${picResult.message}")
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             SourceExecutionResult.Error("获取专辑封面时出错: ${e.message}")
         }
     }
@@ -402,7 +421,7 @@ class SourceExecutor(
             } else {
                 json.decodeFromString<List<MusicItem>>(jsonStr)
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "解析搜索结果失败: ${e.message}")
             emptyList()
         }

@@ -14,8 +14,10 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -39,13 +41,17 @@ class JavaScriptEngine {
 
     companion object {
         private const val TAG = "LX-JSEngine"
-        /** 事件派发超时（毫秒）：8s。源对某平台请求失败/无响应时快速回退内置 API，
-         *  避免用户等 30s 才拿到失败结果（体验=无法播放） */
-        private const val DISPATCH_TIMEOUT_MS = 8_000L
+        /** 事件派发超时（毫秒）：15s。聚合源内部逐个子源尝试，断网时子源连接快速失败（秒级），
+         *  15s 足够遍历多个子源；在线时正常源通常 10s 内出结果。超时即判该源失败切下一个源。
+         *  单源 30s × 3 个源 = 90s 无反馈等待不可接受，故取 15s */
+        private const val DISPATCH_TIMEOUT_MS = 15_000L
         /** 等待循环步进（毫秒） */
         private const val WAIT_STEP_MS = 5L
         /** executeScript 后等待 inited 的最长时长（顶层版本检查可能异步发 inited） */
         private const val INIT_DRAIN_MS = 3_000L
+        /** 2.8 引擎单任务看门狗超时（毫秒）：脚本死循环/阻塞卡死引擎线程时超时并重建引擎；
+         *  与 DISPATCH_TIMEOUT_MS 一致取 15s（看门狗 ≥ 派发超时会无限等待，< 派发超时则误杀慢请求） */
+        private const val ENGINE_TASK_TIMEOUT_MS = 15_000L
         /** JS 源请求（lx.request）连接/读取超时：JS 源加载歌曲播放 URL 可能较慢，
          *  不纳入「平台接口统一 5s」范围，保持长超时 */
         private const val JS_CONNECT_TIMEOUT_MS = 15_000
@@ -57,8 +63,9 @@ class JavaScriptEngine {
     /** IO 作用域：HTTP 请求在 IO 线程跑，完成后结果放入 pendingHttp，不碰 QuickJS */
     private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    /** 引擎专用单线程（QuickJSContext 必须单线程访问，跨线程会抛异常） */
-    private val engineExecutor = Executors.newSingleThreadExecutor { r ->
+    /** 引擎专用单线程（QuickJSContext 必须单线程访问，跨线程会抛异常）；var：卡死时重建 */
+    @Volatile
+    private var engineExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "lx-quickjs-engine").apply { isDaemon = true }
     }
 
@@ -91,21 +98,62 @@ class JavaScriptEngine {
 
     // ===== 引擎线程调度 =====
 
-    /** 在引擎线程执行任务并挂起等待结果 */
+    /**
+     * 在引擎线程执行任务并挂起等待结果。
+     * 2.8 看门狗：任务超时（脚本死循环/阻塞卡死引擎线程）→ 重建引擎并抛错，
+     * 避免 suspendCancellableCoroutine 永久不恢复（getMusicUrl 等整个流程冻结）。
+     */
     private suspend fun <T> onEngineThread(block: () -> T): T = suspendCancellableCoroutine { cont ->
-        engineExecutor.execute {
+        val future = engineExecutor.submit<T> {
             try {
-                cont.resume(block())
-            } catch (e: Exception) {
-                cont.resumeWithException(e)
+                block()
+            } catch (t: Throwable) {
+                throw t
             }
         }
+        cont.invokeOnCancellation { future.cancel(true) }
+        try {
+            cont.resume(future.get(ENGINE_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+        } catch (e: TimeoutException) {
+            Log.e(TAG, "引擎线程任务超时（疑似脚本死循环/阻塞），重建引擎")
+            rebuildEngine()
+            cont.resumeWithException(JavaScriptEngineException("引擎执行超时（${ENGINE_TASK_TIMEOUT_MS / 1000}s）"))
+        } catch (e: InterruptedException) {
+            cont.resumeWithException(e)
+        } catch (e: ExecutionException) {
+            cont.resumeWithException(e.cause ?: e)
+        }
+    }
+
+    /**
+     * 2.8 引擎线程卡死（任务超时）后重建：丢弃卡死的旧线程与旧 context，换新单线程执行器。
+     * 旧 context 由卡死的引擎线程持有、无法安全销毁 → 丢弃引用（每次卡死泄漏一次，可接受）；
+     * 下一次 executeScript 在新线程上 createContext 重新初始化，引擎自愈。
+     */
+    private fun rebuildEngine() {
+        try {
+            context = null
+            global = null
+            engineExecutor.shutdownNow()
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+            Log.w(TAG, "关闭旧引擎线程失败: ${e.message}")
+        }
+        engineExecutor = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "lx-quickjs-engine").apply { isDaemon = true }
+        }
+        Log.w(TAG, "引擎已重建（新线程）")
     }
 
     /** 在引擎线程执行任务并阻塞等待（用于非 suspend 的 getEventHandler 等） */
     private fun <T> onEngineThreadBlocking(block: () -> T): T {
         val future = engineExecutor.submit<T> { block() }
-        return future.get(10, TimeUnit.SECONDS)
+        return try {
+            future.get(15, TimeUnit.SECONDS)
+        } catch (e: TimeoutException) {
+            Log.e(TAG, "引擎线程阻塞任务超时，重建引擎")
+            rebuildEngine()
+            throw e
+        }
     }
 
     // ===== 生命周期 =====
@@ -118,7 +166,7 @@ class JavaScriptEngine {
             QuickJSLoader.init()
             isReady = true
             Log.d(TAG, "QuickJS 引擎初始化完成")
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             isReady = false
             Log.e(TAG, "QuickJS 引擎初始化失败: ${e.message}", e)
         }
@@ -157,7 +205,7 @@ class JavaScriptEngine {
                 // 3. 执行源脚本（QuickJS 原生支持 ES2020，无需语法转换）
                 try {
                     context?.evaluate(scriptContent, "lx-music-source")
-                } catch (e: Exception) {
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                     // 脚本顶层抛错但已注册 request handler / 已发 inited 时视为初始化成功。
                     // 参考 lx-music-mobile QuickJS.java: catch 后 if (inited) return ""。
                     // 部分混淆源（如玉宁熙）在注册与 send(inited) 之后还有自校验，校验失败会 throw，
@@ -178,7 +226,7 @@ class JavaScriptEngine {
 
             Log.i(TAG, "脚本执行成功")
             JavaScriptResult.Success(result = null, resultString = "脚本执行成功")
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "执行脚本失败: ${e.message}", e)
             JavaScriptResult.Error(message = "执行脚本失败: ${e.message}", exception = e)
         }
@@ -191,7 +239,7 @@ class JavaScriptEngine {
         val json = initEventDataJson ?: return null
         return try {
             JSONObject(json)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "解析 inited 数据失败: ${e.message}")
             null
         }
@@ -212,7 +260,7 @@ class JavaScriptEngine {
                     if (registered is Boolean && registered) Unit else null
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "查询事件处理器失败: ${e.message}")
             null
         }
@@ -243,7 +291,7 @@ class JavaScriptEngine {
                 Log.d(TAG, "函数 '$functionName' 返回: ${resultString.take(200)}")
                 JavaScriptResult.Success(result = result, resultString = resultString)
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "调用函数 '$functionName' 失败: ${e.message}", e)
             JavaScriptResult.Error("调用函数 '$functionName' 失败: ${e.message}", e)
         }
@@ -311,7 +359,7 @@ class JavaScriptEngine {
             }
 
             result ?: JavaScriptResult.Error("播放源响应超时（${DISPATCH_TIMEOUT_MS / 1000}s）")
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "[dispatchEvent] 异常: ${e.message}", e)
             JavaScriptResult.Error("事件派发失败: ${e.message}")
         }
@@ -331,7 +379,7 @@ class JavaScriptEngine {
             } else {
                 JavaScriptResult.Success(result = result, resultString = result.toString())
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             JavaScriptResult.Error("获取变量 '$variableName' 失败: ${e.message}", e)
         }
     }
@@ -347,7 +395,7 @@ class JavaScriptEngine {
                 ctx.setProperty(g, variableName, value)
             }
             Unit
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "设置变量 '$variableName' 失败: ${e.message}", e)
         }
     }
@@ -360,7 +408,7 @@ class JavaScriptEngine {
             onEngineThreadBlocking {
                 destroyContext()
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "释放引擎异常: ${e.message}")
         }
         resetState()
@@ -383,7 +431,7 @@ class JavaScriptEngine {
     private fun destroyContext() {
         try {
             context?.destroy()
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "销毁 context 异常: ${e.message}")
         }
         context = null
@@ -413,7 +461,7 @@ class JavaScriptEngine {
         // 内存沙箱：上限 128MB，防止音源脚本内存失控
         try {
             ctx.setMemoryLimit(128 * 1024 * 1024)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "设置内存限制失败: ${e.message}")
         }
 
@@ -474,7 +522,7 @@ class JavaScriptEngine {
                     try {
                         val data = JSONObject(dataJson)
                         Log.i("LX-JSConsole", "${data.optString("level")}: ${data.optString("message")}")
-                    } catch (e: Exception) {
+                    } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                         Log.i("LX-JSConsole", dataJson)
                     }
                     null
@@ -484,7 +532,7 @@ class JavaScriptEngine {
                     null
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "handleNativeCall 异常: ${e.message}", e)
             null
         }
@@ -529,7 +577,7 @@ class JavaScriptEngine {
                 }
                 pendingHttp[key] = resp
                 Log.d(TAG, "[lx.request] 完成: ${result.code}")
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e(TAG, "[lx.request] 请求异常: ${e.message}")
                 val resp = JSONObject().apply {
                     put("key", key)
@@ -541,34 +589,36 @@ class JavaScriptEngine {
     }
 
     /** 将已完成的 HTTP 响应注入 JS（引擎线程执行，驱动 handler 的 Promise 链） */
-    private fun injectResponses() {
+    private suspend fun injectResponses() {
         if (pendingHttp.isEmpty()) return
         try {
-            onEngineThreadBlocking {
-                val g = global ?: return@onEngineThreadBlocking
-                val fn = g.getJSFunction("__lx_on_response__") ?: return@onEngineThreadBlocking
+            // 2.8 用可取消的挂起版 onEngineThread（原 onEngineThreadBlocking 的 future.get 阻塞
+            // 无法被协程取消中断——取消链路在此断裂，withTimeoutOrNull 等超时失效）
+            onEngineThread {
+                val g = global ?: return@onEngineThread
+                val fn = g.getJSFunction("__lx_on_response__") ?: return@onEngineThread
                 val entries = pendingHttp.entries.toList()
                 for (entry in entries) {
                     pendingHttp.remove(entry.key)
                     try {
                         fn.call("http", entry.value.toString())
-                    } catch (e: Exception) {
+                    } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                         Log.e(TAG, "注入 HTTP 响应失败: ${e.message}")
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "injectResponses 异常: ${e.message}")
         }
     }
 
     /** 将到期的定时器注入 JS（引擎线程执行） */
-    private fun injectTimers() {
+    private suspend fun injectTimers() {
         if (pendingTimers.isEmpty()) return
         try {
-            onEngineThreadBlocking {
-                val g = global ?: return@onEngineThreadBlocking
-                val fn = g.getJSFunction("__lx_on_response__") ?: return@onEngineThreadBlocking
+            onEngineThread {
+                val g = global ?: return@onEngineThread
+                val fn = g.getJSFunction("__lx_on_response__") ?: return@onEngineThread
                 val now = System.currentTimeMillis()
                 val dueIds = pendingTimers.entries.filter { it.value <= now }.map { it.key }
                 for (id in dueIds) {
@@ -579,12 +629,12 @@ class JavaScriptEngine {
                     }
                     try {
                         fn.call("timer", JSONObject().put("id", id).toString())
-                    } catch (e: Exception) {
+                    } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                         Log.e(TAG, "注入 timer 失败: ${e.message}")
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "injectTimers 异常: ${e.message}")
         }
     }
@@ -597,7 +647,7 @@ class JavaScriptEngine {
             injectTimers()
             try {
                 onEngineThread { context?.evaluate("0", "drain") }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 break
             }
             // 收到 inited 或没有待处理异步任务时结束
@@ -621,7 +671,7 @@ class JavaScriptEngine {
                 val value = m.groupValues[2].trim().trimEnd('*', '/', ' ').trim()
                 if (value.isNotEmpty()) meta.put(key, value)
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "解析脚本元数据失败: ${e.message}")
         }
         return meta

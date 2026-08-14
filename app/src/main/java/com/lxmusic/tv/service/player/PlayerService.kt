@@ -470,18 +470,28 @@ class PlayerService : Service() {
     }
 
     /**
+     * 2.8 重建播放器：释放旧实例并重新初始化。
+     * 用途：① 音频缓存被清除后（旧 CacheDataSource 持有已释放的 SimpleCache）；
+     *      ② 播放报错后换源重试（ExoPlayer 处于 ERROR 状态时直接 setMediaItem/prepare
+     *         会立即再次失败，重建后从干净状态播放，后续源不再「秒失败」）。
+     */
+    fun rebuildPlayer() {
+        try {
+            releasePlayer()
+            initPlayer()
+            Log.i(TAG, "播放器已重建")
+        } catch (e: Exception) {
+            Log.e(TAG, "重建播放器失败: ${e.message}")
+        }
+    }
+
+    /**
      * 2.8 音频缓存被清除后调用：重建播放器。
      * 旧 ExoPlayer 的 CacheDataSource 持有已 release、文件已删除的旧 SimpleCache，
      * 不重建会导致后续播放全部失败（重启后才恢复）——清除音频缓存后必须重建。
      */
     fun rebuildForCacheCleared() {
-        try {
-            releasePlayer()
-            initPlayer()
-            Log.i(TAG, "音频缓存已清除，播放器已重建")
-        } catch (e: Exception) {
-            Log.e(TAG, "重建播放器失败: ${e.message}")
-        }
+        rebuildPlayer()
     }
 
     /**

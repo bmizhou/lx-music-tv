@@ -470,7 +470,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .edit()
                 .putBoolean("http_server_enabled", enabled)
                 .apply()
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
         }
     }
 
@@ -478,7 +478,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return try {
             app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
                 .getBoolean("http_server_enabled", false)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             false
         }
     }
@@ -555,7 +555,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _toastMessage.value = "服务器启动失败: 端口可能被占用"
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     _serverRunning.value = false
                     try { httpServer?.stop() } catch (_: Exception) {}
@@ -580,7 +580,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 // 2.8 记住关闭状态：下次启动不自动开启
                 saveHttpServerEnabled(false)
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     _toastMessage.value = "服务器停止失败: ${e.message}"
                 }
@@ -610,7 +610,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val raw = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getString(KEY_SEARCH_HISTORY, "") ?: ""
             if (raw.isEmpty()) emptyList() else raw.split(HISTORY_SEPARATOR).filter { it.isNotBlank() }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             emptyList()
         }
     }
@@ -629,7 +629,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .edit()
                 .putString(KEY_SEARCH_HISTORY, updated.joinToString(HISTORY_SEPARATOR))
                 .apply()
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             // 持久化失败不影响本次会话内使用
         }
     }
@@ -645,7 +645,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .edit()
                 .remove(KEY_SEARCH_HISTORY)
                 .apply()
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             // 忽略
         }
     }
@@ -675,7 +675,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 delay(200)
                 val result = try {
                     suggestEngine.suggest(query, _searchPlatform.value)
-                } catch (e: Exception) {
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                     Log.e("LX-MainViewModel", "搜索联想失败: ${e.message}")
                     emptyList()
                 }
@@ -731,7 +731,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _hotKeywords.value = try {
                 browseDataService.getHotSearch(platform)
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "加载热门搜索失败: ${e.message}")
                 emptyList()
             }
@@ -750,7 +750,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     emptyList()
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "加载酷狗热门歌曲失败: ${e.message}")
                 emptyList()
             }
@@ -767,7 +767,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .edit()
                 .putString("preferred_quality", quality.name)
                 .apply()
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "保存偏好音质失败: ${e.message}")
         }
     }
@@ -777,7 +777,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val name = app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
                 .getString("preferred_quality", AudioQuality.QUALITY_320K.name) ?: AudioQuality.QUALITY_320K.name
             AudioQuality.valueOf(name)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             AudioQuality.QUALITY_320K
         }
     }
@@ -792,7 +792,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .edit()
                 .putBoolean("lyric_translation_enabled", enabled)
                 .apply()
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "保存歌词翻译开关失败: ${e.message}")
         }
     }
@@ -801,7 +801,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return try {
             app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
                 .getBoolean("lyric_translation_enabled", true)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             true
         }
     }
@@ -824,7 +824,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .edit()
                 .putString("default_platform", platform.name)
                 .apply()
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "保存默认音乐平台失败: ${e.message}")
         }
     }
@@ -860,7 +860,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val name = app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
                 .getString("default_platform", MusicPlatform.TX.name) ?: MusicPlatform.TX.name
             MusicPlatform.valueOf(name)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             MusicPlatform.TX
         }
     }
@@ -897,7 +897,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     _isSearching.value = false
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     _searchError.value = "搜索出错: ${e.message}"
                     _isSearching.value = false
@@ -942,7 +942,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     _isSearching.value = false
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     _searchError.value = "歌单搜索出错: ${e.message}"
                     _isSearching.value = false
@@ -973,7 +973,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 withTimeoutOrNull(PLAYLIST_SONGS_TIMEOUT_MS) {
                     browseDataService.getPlaylistSongs(playlist.platform, playlist.id, 1, 30)
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "加载歌单歌曲失败: ${e.message}")
                 null
             }
@@ -1006,7 +1006,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: CancellationException) {
                 throw e // 协程被取消（新歌单接管）：不吞取消
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "加载更多歌单歌曲失败: ${e.message}")
                 null
             }
@@ -1073,7 +1073,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } ?: emptyList()
             } catch (e: CancellationException) {
                 throw e // 协程被取消（新任务接管）：不吞取消，交由新任务控制 loading 状态
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "加载浏览数据失败: ${e.message}")
                 emptyList()
             }
@@ -1128,7 +1128,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: CancellationException) {
                 throw e // 协程被取消（新请求接管）：不吞取消，交由新任务控制 loading 状态
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "加载歌曲列表失败: ${e.message}")
                 null
             }
@@ -1167,7 +1167,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         } catch (e: CancellationException) {
             throw e // 协程被取消（新请求接管）：不吞取消，交由新任务控制 loading 状态
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "加载歌曲分页失败: ${e.message}")
             null
         }
@@ -1245,7 +1245,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "整列表播放补拉失败: ${e.message}")
             }
             if (myId == browseSongsRequestId) {
@@ -1283,7 +1283,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: Exception) {
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                     Log.e("LX-MainViewModel", "搜索歌单补拉失败 page=$page: ${e.message}")
                     null
                 }
@@ -1320,7 +1320,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     browseDataService.getPlaylistSongs(platform, id, page, 30)
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: Exception) {
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                     Log.e("LX-MainViewModel", "收藏歌单补拉失败 page=$page: ${e.message}")
                     emptyList()
                 }
@@ -1355,7 +1355,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } ?: emptyList()
             } catch (e: CancellationException) {
                 throw e // 协程被取消（新请求接管）：不吞取消，交由新任务控制 loading 状态
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "加载热门歌曲失败: ${e.message}")
                 emptyList()
             }
@@ -1416,7 +1416,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         sourceId = sourceManager.getEnabledSource()?.id ?: ""
                     )
                 )
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "记录播放历史失败: ${e.message}", e)
             }
 
@@ -1426,7 +1426,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 2.8 播放 URL 只走 JS 源；返回的 sourceId 记录当前 URL 来源，
                 // 播放失败时把该源加入黑名单，重试跳过它真正尝试下一个源
                 doResolveAndPlay(song, playlist, _preferredQuality.value)
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 _toastMessage.value = "播放失败: ${e.message}"
                 _isPlaying.value = false
             }
@@ -1438,18 +1438,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * @return 是否成功开始播放
      */
     private suspend fun doResolveAndPlay(song: Song, playlist: List<Song>, quality: AudioQuality): Boolean {
-        val urlResult = searchService.getMusicUrl(
-            song, quality, tryFailedSourceIds.toSet(),
-            onSourceLoadFailed = { failedName, nextName ->
-                // 2.8 某个源解析播放 URL 失败：toast 提示（失败源 + 歌曲 + 平台 + 下一个要尝试的源）
-                val base = "「$failedName」获取${song.platform.displayName}《${song.name}》播放地址失败"
-                _toastMessage.value = if (nextName != null) "$base，尝试下一个源「$nextName」" else base
-            }
-        )
+        // 2.8 播放 URL 短期缓存 + SimpleCache 实现真离线：getMusicUrl 先查 URL 缓存（命中直接返回），
+        // 断网时命中缓存 URL → play(真实URL, 歌曲维度cacheKey) → CacheDataSource 读 SimpleCache 不触网。
+        // URL 失效由 onPlaybackError 移除缓存并重试（见 onPlaybackError 的 badSourceId==null 分支）。
+        // 总超时兜底（45s）：每源 15s × 最多 3 源 + 余量，保证「5秒后下一曲」提示必然出现；
+        // 又不至于像 120s 那样让用户等太久。逐源失败提示不受影响。
+        // 2.8 仅失败时提示（不提示「正在尝试」）；最后失败源合并进最终提示（「D」播放失败，5秒后播放下一曲）
+        var lastFailedSource: String? = null
+        val urlResult = try {
+            withTimeoutOrNull(30_000) {
+                searchService.getMusicUrl(
+                    song, quality, tryFailedSourceIds.toSet(),
+                    onSourceLoadFailed = { failedName, nextName ->
+                        lastFailedSource = failedName
+                        // 2.8 失败提示：有下一个源 → 「「A」失败，尝试下一个源「B」」；
+                        // 无下一个源（最后一个源也失败）→ 不单独提示，信息合并到失败分支的最终提示
+                        if (nextName != null) {
+                            _toastMessage.value = "「$failedName」获取${song.platform.displayName}《${song.name}》播放地址失败，尝试下一个源「$nextName」"
+                        }
+                    }
+                )
+            } ?: ApiResponse.error("获取播放URL超时（30s）")
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+            ApiResponse.error("获取播放URL异常: ${e.message}")
+        }
         if (urlResult.success && urlResult.data != null) {
             // 记录 URL 来源源 id：播放失败时加入黑名单，重试跳过该源
             currentPlaySourceId = urlResult.data.sourceId
             playNeedsReFetch = false
+            // 2.8 播放来源提示：toast 显示最终成功的源名（用户可确认用了哪个源；URL 缓存命中无 sourceId 不提示）
+            urlResult.data.sourceId?.let { sid ->
+                val srcName = runCatching { sourceManager.getSourceById(sid)?.name }.getOrNull()
+                if (srcName != null) {
+                    _toastMessage.value = "正在播放《${song.name}》（源：$srcName）"
+                }
+            }
             // 通过PlayerService播放（cacheKey=歌曲维度：JS 源 URL 变化仍命中本地音频缓存，不重新下载）
             playerService?.play(
                 PlayerService.MusicInfo(
@@ -1458,16 +1481,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     artist = song.singer,
                     url = urlResult.data.url,
                     picUrl = song.picUrl,
-                    cacheKey = CacheManager.urlKey(song, quality)
+                    cacheKey = CacheManager.songCacheKey(song, quality)
                 )
             )
             // 持久化当前歌曲：后台播放后进程重建可恢复左下角播放卡片
             saveCurrentSongPrefs(song)
             return true
         }
-        _toastMessage.value = "播放失败：所有播放源均无法获取有效播放地址"
+        // 2.8 所有播放源均失败：Toast 提示 5 秒后自动播放下一曲，不卡在失败歌曲上。
+        // 最终提示带最后失败源名（「D」播放失败，5秒后播放下一曲），无失败源则用通用文案
+        val nextSong = if (playlist.size > 1) {
+            val idx = playlist.indexOfFirst { it.id == song.id }
+            when {
+                idx >= 0 && idx < playlist.size - 1 -> playlist[idx + 1]
+                idx >= 0 -> playlist[0]            // 最后一首失败 → 回到第一首
+                else -> null
+            }
+        } else null
+        val failTail = lastFailedSource?.let { "「$it」播放失败" }
+            ?: "播放失败：所有播放源均无法获取有效播放地址"
         _isPlaying.value = false
         playNeedsReFetch = false
+        if (nextSong != null) {
+            _toastMessage.value = "$failTail，5秒后播放下一曲"
+            // 5 秒后自动跳到下一曲；期间用户手动切歌/停止则取消自动跳曲（以用户操作为准）
+            delay(5000)
+            if (_currentSong.value?.id == song.id) {
+                playSong(nextSong, playlist)
+            } else {
+                Log.d("LX-MainViewModel", "5秒内用户已切换歌曲，取消自动跳曲")
+            }
+        } else {
+            _toastMessage.value = failTail
+        }
         return false
     }
 
@@ -1628,7 +1674,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         CacheManager.putLyricTranslation(app, song, result.data.tlyric)
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "获取歌词失败: ${e.message}", e)
             }
         }
@@ -1662,7 +1708,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     _toastMessage.value = "已添加到收藏"
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 _toastMessage.value = "操作失败: ${e.message}"
             }
         }
@@ -1674,7 +1720,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun isFavorite(songId: String): Boolean {
         return try {
             dataStoreManager.isFavorite(songId)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             false
         }
     }
@@ -1715,7 +1761,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             Log.d("LX-MainViewModel", "Web添加歌单成功: ${playlist.name} (${playlist.platform.name})")
             PlaylistAddResult(true, "已收藏歌单「${playlist.name}」")
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "Web添加歌单失败: ${e.message}")
             PlaylistAddResult(false, "添加失败: ${e.message}")
         }
@@ -1785,7 +1831,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             null
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "解析歌单链接失败: ${e.message}")
             null
         }
@@ -1816,7 +1862,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     _toastMessage.value = "已收藏歌单"
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 _toastMessage.value = "操作失败: ${e.message}"
             }
         }
@@ -1828,7 +1874,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun isFavoritePlaylist(playlistId: String): Boolean {
         return try {
             dataStoreManager.isFavoritePlaylist(playlistId)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             false
         }
     }
@@ -1851,7 +1897,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _favoritePlaylistLoading.value = true
             val songs = try {
                 browseDataService.getPlaylistSongs(playlist.platform, playlist.playlistId, 1, 30)
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "加载收藏歌单歌曲失败: ${e.message}")
                 emptyList()
             }
@@ -1880,7 +1926,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val batch = try {
                 browseDataService.getPlaylistSongs(platform, favoritePlaylistSongsId, next, 30)
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e("LX-MainViewModel", "加载更多收藏歌单歌曲失败: ${e.message}")
                 emptyList()
             }
@@ -1909,7 +1955,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             map[playlistId] = songs.map { "${it.platform.key}|${it.id}" }.toMutableSet()
             if (map.size > 200) map.clear()
             prefs.edit().putString("favorite_playlist_song_map", encodeFavoritePlaylistSongMap(map)).apply()
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "记录收藏歌单歌曲失败: ${e.message}")
         }
     }
@@ -1928,7 +1974,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     prefs.edit().putString("favorite_playlist_song_map", encodeFavoritePlaylistSongMap(map)).apply()
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
         }
     }
 
@@ -1980,13 +2026,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun exitApplication() {
         Log.d("LX-MainViewModel", "[exit] 开始退出, isServiceBound=$isServiceBound, playerService=${if (playerService != null) "非空" else "null"}")
         // 1. 释放播放器 + 停前台通知
-        try { playerService?.stopAndShutdown() } catch (e: Exception) { Log.e("LX-MainViewModel", "[exit] stopAndShutdown异常: ${e.message}") }
+        try { playerService?.stopAndShutdown() } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { Log.e("LX-MainViewModel", "[exit] stopAndShutdown异常: ${e.message}") }
         // 2. 解绑服务连接（必须先解绑再 stopService：绑定中服务要等绑定断开才销毁）
         if (isServiceBound) {
             try {
                 app.unbindService(serviceConnection)
                 Log.d("LX-MainViewModel", "[exit] unbindService 成功")
-            } catch (e: Exception) { Log.e("LX-MainViewModel", "[exit] unbindService异常: ${e.message}") }
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { Log.e("LX-MainViewModel", "[exit] unbindService异常: ${e.message}") }
             isServiceBound = false
             playerService = null
         }
@@ -1994,7 +2040,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         try {
             app.stopService(Intent(app, PlayerService::class.java))
             Log.d("LX-MainViewModel", "[exit] stopService 调用完成")
-        } catch (e: Exception) { Log.e("LX-MainViewModel", "[exit] stopService异常: ${e.message}") }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { Log.e("LX-MainViewModel", "[exit] stopService异常: ${e.message}") }
         // 4. 停止 HTTP 服务器、清空状态与持久化
         try { httpServer?.stop() } catch (_: Exception) {}
         _currentSong.value = null
@@ -2046,7 +2092,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .putString("current_song_json", json)
                 .putString("current_playlist_json", listJson)
                 .apply()
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "保存当前歌曲失败: ${e.message}", e)
         }
     }
@@ -2070,7 +2116,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 platform = runCatching { MusicPlatform.valueOf(json.getString("platform")) }
                     .getOrDefault(MusicPlatform.KW)
             )
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "恢复当前歌曲失败: ${e.message}", e)
             null
         }
@@ -2100,7 +2146,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }.getOrNull()
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e("LX-MainViewModel", "恢复播放队列失败: ${e.message}", e)
             emptyList()
         }
@@ -2171,16 +2217,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 当前 URL 来源的源加入本轮失败集合（URL 由 JS 源解析返回，必有来源；防御空值则不再重试）
                 val badSourceId = currentPlaySourceId
                 if (badSourceId == null) {
-                    Log.w("LX-MainViewModel", "播放出错但未知来源源，停止重试: ${song.name}")
-                    _isPlaying.value = false
-                    _toastMessage.value = "播放失败：无法获取有效播放地址"
+                    // 2.8 URL 来自缓存（URL 缓存命中未记录源）：移除失效的 URL 缓存 + 坏音频缓存，
+                    // 重建播放器重新解析——重新解析会写新 URL 缓存；若新 URL 仍失败则有来源源 → 换源，
+                    // 均有终点，不会死循环
+                    Log.w("LX-MainViewModel", "播放出错且无来源源（缓存 URL），移除失效缓存并重新解析: ${song.name}")
+                    val badKey = CacheManager.songCacheKey(song, _preferredQuality.value)
+                    try {
+                        CacheManager.removeUrl(badKey)
+                    } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+                        Log.w("LX-MainViewModel", "移除失效 URL 缓存失败: ${e.message}")
+                    }
+                    try {
+                        CacheManager.getAudioCache(app).removeResource(badKey)
+                    } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+                        Log.w("LX-MainViewModel", "移除坏音频缓存失败: ${e.message}")
+                    }
+                    viewModelScope.launch {
+                        playerService?.rebuildPlayer()
+                        doResolveAndPlay(song, _playlist.value, _preferredQuality.value)
+                    }
                     return
                 }
                 tryFailedSourceIds.add(badSourceId)
                 Log.w("LX-MainViewModel", "播放出错，源[$badSourceId] URL 无效，按顺序切下一个源: ${song.name}（本轮已失败 ${tryFailedSourceIds.size} 个源）")
                 viewModelScope.launch {
-                    // 停止旧播放并清进度，重新解析（本轮失败集合保留：不重试失败源，切下一个）
-                    playerService?.stop()
+                    // 2.8 换源重试前重建播放器：ExoPlayer 报错后处于 ERROR 状态，
+                    // 不重建直接 setMediaItem/prepare 会立即再次触发错误，导致后续源全部「秒失败」跳过
+                    playerService?.rebuildPlayer()
                     _progress.value = 0f
                     _duration.value = 0L
                     doResolveAndPlay(song, _playlist.value, _preferredQuality.value)
@@ -2256,7 +2319,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (isServiceBound) {
             try {
                 getApplication<Application>().unbindService(serviceConnection)
-            } catch (e: Exception) { Log.e("LX-MainViewModel", "[service] onCleared unbind异常: ${e.message}") }
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { Log.e("LX-MainViewModel", "[service] onCleared unbind异常: ${e.message}") }
             isServiceBound = false
         }
         // 停止服务器

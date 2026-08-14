@@ -128,7 +128,7 @@ class BrowseDataService(
                 MusicPlatform.MG -> fetchMgRankings().drop(offset).take(30)
                 else -> emptyList()
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取排行榜失败: ${e.message}", e)
             emptyList()
         }
@@ -149,7 +149,7 @@ class BrowseDataService(
                 MusicPlatform.MG -> fetchMgRankSongs(id)
                 else -> emptyList()
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取榜单歌曲失败: ${e.message}", e)
             emptyList()
         }
@@ -175,7 +175,7 @@ class BrowseDataService(
                 ?: ranks.firstOrNull { it.name.contains("热歌", ignoreCase = true) || it.name.contains("热榜", ignoreCase = true) }
                 ?: ranks.first()
             fetchKgRankSongs(top.id, 1, limit)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取酷狗热门歌曲失败: ${e.message}", e)
             emptyList()
         }
@@ -195,7 +195,7 @@ class BrowseDataService(
                 MusicPlatform.MG -> fetchMgPlaylists(offset)
                 else -> emptyList()
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取歌单失败: ${e.message}", e)
             emptyList()
         }
@@ -215,7 +215,7 @@ class BrowseDataService(
                 MusicPlatform.MG -> fetchMgPlaylistSongs(id)
                 else -> emptyList()
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取歌单歌曲失败: ${e.message}", e)
             emptyList()
         }
@@ -240,7 +240,7 @@ class BrowseDataService(
                 MusicPlatform.MG -> fetchMgPlaylistDetail(id)
                 else -> null
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取歌单详情失败: ${e.message}", e)
             null
         }
@@ -404,7 +404,7 @@ class BrowseDataService(
                 MusicPlatform.MG -> fetchMgPlaylists(offset)
                 else -> emptyList()
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取推荐歌单失败: ${e.message}", e)
             emptyList()
         }
@@ -433,7 +433,7 @@ class BrowseDataService(
             } else {
                 result
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取热门搜索失败($platform): ${e.message}", e)
             // 单平台接口异常时回退网易云真实热词；网易云自身失败时返回空，由 UI 兜底
             try {
@@ -559,7 +559,7 @@ class BrowseDataService(
         // 宽松解析：规避 Android 13+ org.json 严格模式遇重复 key 抛异常（R8 shrink 还会剔除宽松版 org.json）
         val obj = try {
             parseToObj(response.body)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "fetchWyTopListViaWeApi JSON 解析失败", e)
             return emptyList()
         }
@@ -597,7 +597,7 @@ class BrowseDataService(
         // 宽松解析：规避 Android 13+ org.json 严格模式遇重复 key 抛异常（网易云 /api/toplist 响应中 updateFrequency 字段重复出现）
         val obj = try {
             parseToObj(response.body)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "fetchWyTopListFrom JSON 解析失败", e)
             return emptyList()
         }
@@ -916,7 +916,7 @@ class BrowseDataService(
         val url = "https://u.y.qq.com/cgi-bin/musicu.fcg?data=${URLEncoder.encode(body.toString(), "UTF-8")}"
         val response = httpClient.get(url, headers = QQ_HEADERS)
         if (response.isSuccess) {
-            val json = try { JSONObject(response.body) } catch (e: Exception) { null }
+            val json = try { JSONObject(response.body) } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { null }
             val tl = json?.optJSONObject("toplist")
             val data = tl?.optJSONObject("data")
             val song = data?.optJSONObject("song")
@@ -1004,7 +1004,7 @@ class BrowseDataService(
                     }
                     Log.e(TAG, "[QQ榜单] 解析后为空（字段名/过滤问题？）")
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 Log.e(TAG, "解析QQ榜单列表失败: ${e.message}")
             }
         }
@@ -1102,7 +1102,7 @@ class BrowseDataService(
         // message 含失败异常详情（SSL/DNS/超时等），用于排查 mobilecdn 在部分设备不可达的问题
         Log.d(TAG, "[KG榜单歌曲] page=$page 主接口 code=${response.code} isSuccess=${response.isSuccess} msg=${response.message}")
         if (response.isSuccess) {
-            val json = try { JSONObject(response.body) } catch (e: Exception) { null }
+            val json = try { JSONObject(response.body) } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { null }
             val list = json?.optJSONObject("data")?.optJSONArray("info")
             if (list != null && list.length() > 0) {
                 val songs = parseKgSongs(list)
@@ -1190,7 +1190,7 @@ class BrowseDataService(
         )
         Log.d(TAG, "[KG歌单歌曲] page=$page 主接口 code=${response.code} isSuccess=${response.isSuccess} msg=${response.message}")
         if (response.isSuccess) {
-            val json = try { JSONObject(response.body) } catch (e: Exception) { null }
+            val json = try { JSONObject(response.body) } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { null }
             val list = json?.optJSONObject("data")?.optJSONArray("info")
             if (list != null && list.length() > 0) {
                 val songs = parseKgPlaylistSongs(list)
@@ -1337,7 +1337,7 @@ class BrowseDataService(
                     )
                 )
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "解析酷狗歌单HTML歌曲失败: ${e.message}", e)
         }
         return songs
@@ -1515,7 +1515,7 @@ class BrowseDataService(
         if (!response.isSuccess) return emptyList()
         val raw = try {
             KwCrypto.decodeData(response.body)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "酷我榜单解密失败: ${e.message}")
             return emptyList()
         }

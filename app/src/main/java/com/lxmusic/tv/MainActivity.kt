@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
@@ -44,6 +45,7 @@ import com.lxmusic.tv.presentation.screen.PlayerScreen
 import com.lxmusic.tv.presentation.screen.SearchResultScreen
 import com.lxmusic.tv.presentation.screen.SourceManagementScreen
 import com.lxmusic.tv.presentation.screen.InterfaceSettingsScreen
+import com.lxmusic.tv.presentation.screen.DiscCoverButton
 import com.lxmusic.tv.presentation.theme.FocusBorder
 import com.lxmusic.tv.presentation.theme.LXMusicTheme
 import com.lxmusic.tv.presentation.theme.LXPrimary
@@ -96,16 +98,32 @@ fun LXMusicApp() {
     var tabRefreshTick by remember { mutableIntStateOf(0) }
 
     // 监听Toast消息
-    // 复用单个 Toast 实例：快速连续触发时立即替换内容并重置计时，而不是排队显示
-    //（旧实现每次 makeText().show() 会排队 2s/条，快速切播放模式多次后提示严重滞后）
+    // 2.8 Toast 队列：依次显示（每条约 2.2s），不再快速替换——
+    // 多源切换时「A失败→切B」「正在尝试B」「B失败→切D」…完整提示链用户都能看到。
+    //（旧实现是替换式：A 失败 toast 刚设置就被「正在尝试B」覆盖，用户永远看不到失败提示）
     val toastMessage by viewModel.toastMessage.collectAsState()
     val toast = remember { arrayOfNulls<Toast>(1) }
+    val toastQueue = remember { mutableStateListOf<String>() }
     LaunchedEffect(toastMessage) {
         toastMessage?.let {
-            val t = toast[0] ?: Toast.makeText(context, it, Toast.LENGTH_SHORT).also { toast[0] = it }
-            t.setText(it)
-            t.show()
+            // 队列上限：极端连续提示时丢弃最旧的（保留最新），避免无限堆积
+            if (toastQueue.size >= 8) toastQueue.removeAt(0)
+            toastQueue.add(it)
             viewModel.clearToastMessage()
+        }
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (toastQueue.isEmpty()) {
+                delay(150)
+                continue
+            }
+            val msg = toastQueue.removeAt(0)
+            val t = toast[0] ?: Toast.makeText(context, msg, Toast.LENGTH_SHORT).also { toast[0] = it }
+            t.setText(msg)
+            t.show()
+            // 等当前提示显示完再取下一条（Toast LENGTH_SHORT ≈ 2s）
+            delay(2200)
         }
     }
 
@@ -565,44 +583,35 @@ fun FloatingNowPlayingButton(
         }
     }
 
-    IconButton(
+    // 2.8 复用公共黑胶光盘组件 DiscCoverButton（与主页 NowPlayingBar 完全一致：48dp/环6/封面36）。
+    // 不用 IconButton：其内部强制 40dp + 自带状态层，会导致封面非标准圆形/多出一圈
+    DiscCoverButton(
         onClick = onClick,
-        modifier = modifier
-            .size(52.dp)
-            // 红底圆形按钮：焦点态白色描边（红底按钮须用白色焦点框，见 UI 焦点约定）
-            .background(LXPrimary, CircleShape)
-            .lxBackButtonFocus(focusedColor = FocusBorder, glow = true, animated = true)
+        modifier = modifier,
+        rotation = coverRotation.value
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            if (!coverUrl.isNullOrBlank()) {
-                RemoteImage(
-                    url = coverUrl,
-                    contentDescription = "正在播放，点击进入播放页",
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(CircleShape)
-                        .graphicsLayer { rotationZ = coverRotation.value },
-                    contentScale = ContentScale.Crop,
-                    placeholder = {
-                        Icon(
-                            imageVector = Icons.Filled.MusicNote,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(26.dp)
-                        )
-                    }
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.MusicNote,
-                    contentDescription = "正在播放，点击进入播放页",
-                    tint = Color.White,
-                    modifier = Modifier.size(28.dp)
-                )
-            }
+        if (!coverUrl.isNullOrBlank()) {
+            RemoteImage(
+                url = coverUrl,
+                contentDescription = "正在播放，点击进入播放页",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                placeholder = {
+                    Icon(
+                        imageVector = Icons.Filled.MusicNote,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Filled.MusicNote,
+                contentDescription = "正在播放，点击进入播放页",
+                tint = Color.White,
+                modifier = Modifier.size(28.dp)
+            )
         }
     }
 }

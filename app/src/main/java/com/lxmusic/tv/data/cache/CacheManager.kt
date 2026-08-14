@@ -65,8 +65,11 @@ object CacheManager {
     /** 歌词缓存 key（平台+歌曲id） */
     private fun lyricKey(song: Song): String = md5("${song.platform.key}|${song.id}")
 
-    /** URL 短期缓存 key（平台+歌曲id+音质） */
-    fun urlKey(song: Song, quality: AudioQuality): String =
+    /**
+     * 音频缓存 key（歌曲维度：平台+歌曲id+音质，与 URL 无关）。
+     * JS 源返回的播放 URL 会变化，但 key 不含 URL——URL 变了照样命中同一份缓存，不重新下载。
+     */
+    fun songCacheKey(song: Song, quality: AudioQuality): String =
         "${song.platform.key}|${song.id}|${quality.name}"
 
     // ==================== 音频缓存（ExoPlayer SimpleCache，播放时自动边播边缓存） ====================

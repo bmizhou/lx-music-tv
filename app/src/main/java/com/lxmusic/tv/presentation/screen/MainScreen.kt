@@ -529,6 +529,41 @@ fun NavigationSidebar(
 }
 
 /**
+ * 2.8 黑胶光盘封面按钮（主页侧栏底部 NowPlayingBar 与悬浮球 FloatingNowPlayingButton 共用）：
+ * 48dp 总尺寸 / 环 6dp / 封面 36dp；未聚焦纯黑环（黑胶边缘），聚焦整圆变主题色发光。
+ * 纯 Box + clickable 实现（不用 IconButton：其内部强制 40dp + 状态层，会导致封面非标准圆形/多一圈）。
+ */
+@Composable
+fun DiscCoverButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    rotation: Float = 0f,
+    content: @Composable () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier = modifier
+            .size(50.dp)
+            // 播放旋转 / 暂停归 0（黑胶整盘旋转；graphicsLayer 默认以中心为旋转轴）
+            .graphicsLayer { rotationZ = rotation }
+            .onFocusChanged { focused = it.isFocused }
+            .clip(CircleShape)
+            // 深色圆环（黑胶边缘，固定深色不随主题）；聚焦时主题色发光
+            .background(if (focused) LXPrimary.copy(alpha = 0.40f) else Color(0xFF3A3A40))
+            .clickable { onClick() }
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(6.dp)
+                .clip(CircleShape)
+        ) {
+            content()
+        }
+    }
+}
+
+/**
  * 正在播放控制条（导航栏底部常驻入口，2.6 窄栏版）
  * 窄栏只放 1 个图标宽：封面（点击进播放页）+ 播放/暂停按钮；
  * 上一曲/下一曲等完整控制在播放页控制栏里操作
@@ -560,16 +595,11 @@ fun NowPlayingBar(
             }
         }
 
-        // 封面：点击进入播放页
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                // 播放旋转 / 暂停归 0（graphicsLayer 默认以中心为旋转轴）
-                .graphicsLayer { rotationZ = coverRotation.value }
-                .clip(RoundedCornerShape(10.dp))
-                // 统一圆形聚焦（填充+焦点环一次性绘制，无空带、边框粗细统一）
-                .lxCircleButtonFocus()
-                .clickable { onClick() }
+        // 2.8 黑胶光盘封面：复用公共组件 DiscCoverButton（48dp/环6/封面36），
+        // 与悬浮球（FloatingNowPlayingButton）样式完全一致；聚焦环变主题色发光
+        DiscCoverButton(
+            onClick = onClick,
+            rotation = coverRotation.value
         ) {
             if (!song.picUrl.isNullOrBlank()) {
                 RemoteImage(
@@ -611,7 +641,7 @@ fun NowPlayingBar(
         // 播放/暂停按钮（遥控器必须可聚焦操作）
         Box(
             modifier = Modifier
-                .requiredSize(40.dp)
+                .requiredSize(50.dp)
                 // 统一圆形聚焦（填充+焦点环一次性绘制，无空带、边框粗细统一）
                 .lxCircleButtonFocus()
                 .clickable { onPlayPause() },

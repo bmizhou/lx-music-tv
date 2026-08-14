@@ -73,7 +73,7 @@ class SourceManagerImpl(
             javaScriptEngine?.initialize()
             sourceExecutor = SourceExecutor(javaScriptEngine!!)
             Log.i(TAG, "JavaScript 引擎初始化成功")
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "JavaScript 引擎初始化失败: ${e.message}", e)
         }
     }
@@ -93,7 +93,7 @@ class SourceManagerImpl(
             enabledSourceId = savedSources.find { it.isEnabled }?.id
             _sourcesFlow.value = sources.toList()
             Log.i(TAG, "从数据库加载了 ${sources.size} 个播放源")
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "加载播放源失败: ${e.message}", e)
         }
     }
@@ -143,7 +143,7 @@ class SourceManagerImpl(
             }
             _sourcesFlow.value = sources.toList()
             true
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "保存播放源失败: ${e.message}", e)
             false
         }
@@ -325,7 +325,7 @@ class SourceManagerImpl(
             } else {
                 ImportResult.Error("解析播放源文件失败: 脚本格式不正确")
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             ImportResult.Error("导入失败: ${e.message}")
         }
     }
@@ -369,7 +369,7 @@ class SourceManagerImpl(
                 }
                 else -> result
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             SourceExecutionResult.Error("加载播放源失败: ${e.message}")
         }
     }
@@ -402,7 +402,10 @@ class SourceManagerImpl(
         musicId: String,
         quality: AudioQuality = AudioQuality.QUALITY_128K,
         source: String = "kw",
-        sourceId: String? = null
+        sourceId: String? = null,
+        // 2.8 歌曲信息透传给 JS 源（按歌名搜索的源需要，缺失报「没歌名搜不了」）
+        songName: String = "",
+        singer: String = ""
     ): SourceExecutionResult {
         val executor = sourceExecutor ?: return SourceExecutionResult.Error("源执行器未初始化")
 
@@ -414,7 +417,11 @@ class SourceManagerImpl(
             if (currentScriptContent != targetSource.scriptContent) {
                 val loadResult = loadAndExecuteSource(targetSource.id)
                 if (loadResult is SourceExecutionResult.Error) {
-                    Log.w(TAG, "按平台切换到播放源 ${targetSource.name} 失败: ${loadResult.message}，回退当前源")
+                    // 2.8 目标源脚本加载失败：直接判为失败返回（上层回调失败信息并切下一个源）。
+                    // 原「回退当前源」会拿旧脚本假扮该源执行 → 返回同一 URL、无失败提示、
+                    // 播放反复失败（多源切换时后几个源全部无效）
+                    Log.w(TAG, "播放源 ${targetSource.name} 加载失败，判为失败: ${loadResult.message}")
+                    return loadResult
                 }
             }
         } else {
@@ -423,20 +430,26 @@ class SourceManagerImpl(
             if (loadError != null) return loadError
         }
 
-        return executor.getMusicUrl(musicId, quality, source)
+        return executor.getMusicUrl(musicId, quality, source, songName, singer)
     }
 
     /**
      * 获取歌词
      */
-    suspend fun getLyricWithSource(musicId: String): SourceExecutionResult {
+    suspend fun getLyricWithSource(
+        musicId: String,
+        // 2.8 补平台/歌名/歌手（JS 源歌词需要）
+        source: String = "kw",
+        songName: String = "",
+        singer: String = ""
+    ): SourceExecutionResult {
         val executor = sourceExecutor ?: return SourceExecutionResult.Error("源执行器未初始化")
 
         // 未加载源时自动加载
         val loadError = autoLoadEnabledSource()
         if (loadError != null) return loadError
 
-        return executor.getLyric(musicId)
+        return executor.getLyric(musicId, source, songName, singer)
     }
 
     /**

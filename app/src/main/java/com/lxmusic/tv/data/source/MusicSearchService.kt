@@ -156,7 +156,7 @@ class MusicSearchService(
                     pageSize = params.pageSize
                 )
             )
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "搜索异常", e)
             ApiResponse.error("搜索失败: ${e.message}")
         }
@@ -188,7 +188,7 @@ class MusicSearchService(
                 playlists.isEmpty() -> ApiResponse.success(emptyList())
                 else -> ApiResponse.success(playlists)
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "歌单搜索异常", e)
             ApiResponse.error("歌单搜索失败: ${e.message}")
         }
@@ -344,21 +344,23 @@ class MusicSearchService(
      * @param excludeSourceIds 本轮播放尝试中已失败的源 id 集合：这些源返回的 URL 已被实测无法播放（403 等），
      * 本轮按顺序继续尝试下一个源时跳过它们（下次播放重新按顺序从头尝试）
      * @param onSourceLoadFailed 某个源解析播放 URL 失败时回调：(失败源名称, 下一个要尝试的源名称或 null)
+     * @param onSourceTrying 2.8 开始尝试某个源时回调（源名称），用于 UI 展示「正在尝试源 X」进度反馈
      */
     suspend fun getMusicUrl(
         song: Song,
         quality: AudioQuality = AudioQuality.QUALITY_320K,
         excludeSourceIds: Set<String> = emptySet(),
-        onSourceLoadFailed: (failedSourceName: String, nextSourceName: String?) -> Unit = { _, _ -> }
+        onSourceLoadFailed: (failedSourceName: String, nextSourceName: String?) -> Unit = { _, _ -> },
+        onSourceTrying: ((sourceName: String) -> Unit)? = null
     ): ApiResponse<MusicPlayResult> = withContext(Dispatchers.IO) {
         try {
-            val result = tryFetchUrlOnce(song, quality, excludeSourceIds, onSourceLoadFailed)
+            val result = tryFetchUrlOnce(song, quality, excludeSourceIds, onSourceLoadFailed, onSourceTrying)
             if (result != null) {
                 ApiResponse.success(result)
             } else {
                 ApiResponse.error("获取播放URL失败: 没有可用的播放源")
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "获取播放URL异常", e)
             ApiResponse.error("获取播放URL失败: ${e.message}")
         }
@@ -372,26 +374,68 @@ class MusicSearchService(
         song: Song,
         quality: AudioQuality,
         excludeSourceIds: Set<String>,
-        onSourceLoadFailed: (String, String?) -> Unit
+        onSourceLoadFailed: (String, String?) -> Unit,
+        onSourceTrying: ((String) -> Unit)? = null
     ): MusicPlayResult? {
-        // 2.8 不缓存播放 URL：签名直链/防盗链 URL 有时效（可能数小时即失效），
-        // 缓存 URL 会在过期后仍被命中导致播放失败。每次播放都重新解析拿新 URL；
-        // 音频流数据由 ExoPlayer SimpleCache（CacheDataSource）按 URL 缓存，播放时自动边播边缓存。
-        // 2.8 播放 URL 只走 JS 源：内置 API 直链不稳定（无 cookie/防盗链易 403、flac 直链常失效），
-        // 且 JS 源失败时用官方 API 兜底可能拿到坏 URL 导致播放卡 0。JS 源全部失败即播放失败。
+        // 2.8 恢复播放 URL 短期缓存（歌曲维度 key，URL 与歌曲绑定）：命中直接返回。
+        // 意义：① 缓解解析接口按频率风控；② 断网时命中缓存 URL → play 走 CacheDataSource
+        // 读 SimpleCache 音频缓存，实现真离线播放。URL 失效（过期/坏链）由 onPlaybackError
+        // 移除缓存并重新解析（见 MainViewModel），不会死循环。
+        val urlCacheKey = CacheManager.songCacheKey(song, quality)
+        val cachedUrl = try {
+            CacheManager.getUrl(urlCacheKey)
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+            null
+        }
+        if (!cachedUrl.isNullOrEmpty()) {
+            Log.i(TAG, "命中播放 URL 缓存: ${song.name} key=$urlCacheKey")
+            // sourceId=null：缓存未记录来源源；播放失败时走 onPlaybackError 的
+            // badSourceId==null 分支（移除缓存 + 重新解析换源）
+            return MusicPlayResult(cachedUrl, quality, null)
+        }
 
         // 按优先级遍历启用的 JS 源（先启用/先加载的优先级最高），
         // 当前源获取失败时自动切换到下一个源尝试（传入 source.id，逐个真正尝试）
         val sourceCode = song.platform.key
-        // 先过滤本轮已失败源，得到实际要尝试的候选列表（保持导入顺序），便于取「下一个源」名称
-        val candidates = sourceManager.getSourcesForPlatform(sourceCode).filter { it.id !in excludeSourceIds }
+        // 先过滤本轮已失败源，得到实际要尝试的候选列表（保持导入顺序），便于取「下一个源」名称。
+        // 2.8 双保险：getSourcesForPlatform 可能因源 id 变化/平台配置缺失把不支持平台的源误判为全平台，
+        // 遍历时再显式校验一次「空配置=全平台 或 含当前平台」，避免未勾选平台的源被尝试
+        val candidates = sourceManager.getSourcesForPlatform(sourceCode)
+            .filter { it.id !in excludeSourceIds }
+            .filter { source ->
+                val platforms = try {
+                    sourceManager.getSourcePlatforms(source.id)
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+                    emptySet()
+                }
+                platforms.isEmpty() || platforms.contains(sourceCode)
+            }
         candidates.forEachIndexed { index, source ->
-            val result = sourceManager.getMusicUrlWithSource(song.id, quality, sourceCode, source.id)
+            // 2.8 开始尝试前回调（UI 展示「正在尝试源 X」，避免聚合源长等待无反馈）
+            onSourceTrying?.invoke(source.name)
+            val result = sourceManager.getMusicUrlWithSource(
+                musicId = song.id,
+                quality = quality,
+                source = sourceCode,
+                sourceId = source.id,
+                // 2.8 传歌名/歌手：JS 源按歌名搜索需要（缺失报「没歌名搜不了」）
+                songName = song.name,
+                singer = song.singer
+            )
             when (result) {
                 is SourceExecutionResult.UrlSuccess -> {
                     if (result.url.isNotEmpty()) {
+                        // 2.8 解析成功写入 URL 缓存（下次直接命中，断网可离线播放）
+                        try {
+                            CacheManager.putUrl(urlCacheKey, result.url)
+                        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+                            Log.w(TAG, "写入 URL 缓存失败: ${e.message}")
+                        }
                         return MusicPlayResult(result.url, quality, source.id)
                     }
+                    // 2.8 空 URL 视为失败：回调失败信息并切下一个源（原来静默跳过，无提示且少试一个源）
+                    Log.w(TAG, "JS源[${source.name}]返回空URL，尝试下一个源")
+                    onSourceLoadFailed(source.name, candidates.getOrNull(index + 1)?.name)
                 }
                 is SourceExecutionResult.Error -> {
                     Log.w(TAG, "JS源[${source.name}]获取URL失败，尝试下一个源: ${result.message}")
@@ -411,7 +455,10 @@ class MusicSearchService(
         try {
             // 先尝试通过自定义源获取（按优先级遍历，失败自动切换下一个源）
             for (source in sourceManager.getSourcesForPlatform(song.platform.key)) {
-                val result = sourceManager.getLyricWithSource(song.id)
+                // 2.8 传平台/歌名/歌手：JS 源歌词此前缺 name 且 source 硬编码，全部失败
+                val result = sourceManager.getLyricWithSource(
+                    song.id, song.platform.key, song.name, song.singer
+                )
                 when (result) {
                     is SourceExecutionResult.LyricSuccess -> {
                         val lyricsInfo = parseLyricsResponse(result.lyric)
@@ -467,7 +514,7 @@ class MusicSearchService(
             }
 
             ApiResponse.error("获取歌词失败")
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             ApiResponse.error("获取歌词失败: ${e.message}")
         }
     }
@@ -482,7 +529,7 @@ class MusicSearchService(
             val result = qqMusicApi.search(keyword, limit = 5)
             val first = result.list.firstOrNull() ?: return@withContext null
             qqMusicApi.getLyric(first.songMid)
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             Log.e(TAG, "跨平台歌词兜底失败: ${e.message}")
             null
         }
@@ -549,7 +596,7 @@ class MusicSearchService(
             }
 
             ApiResponse.error("获取封面失败")
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             ApiResponse.error("获取封面失败: ${e.message}")
         }
     }
@@ -599,7 +646,7 @@ class MusicSearchService(
                     lxlyric = null
                 )
             }
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             LyricsInfo(
                 lyric = lyricText,
                 tlyric = null,
@@ -624,7 +671,7 @@ private fun MusicItem.toSong(): Song {
         duration = duration,
         platform = try {
             MusicPlatform.valueOf(platform.uppercase())
-        } catch (e: Exception) {
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             MusicPlatform.LOCAL
         },
         quality = listOf(AudioQuality.QUALITY_128K, AudioQuality.QUALITY_320K, AudioQuality.FLAC)

@@ -14,8 +14,8 @@ android {
         applicationId = "com.lxmusic.tv"
         minSdk = 23
         targetSdk = 37
-        versionCode = 217
-        versionName = "2.8.202608131525"
+        versionCode = 239
+        versionName = "2.8.202608141000"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
