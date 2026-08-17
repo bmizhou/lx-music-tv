@@ -12,6 +12,7 @@ import com.lxmusic.tv.script.SourceExecutionResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.util.LinkedHashMap
 
 /**
  * 音乐搜索服务
@@ -35,6 +36,16 @@ class MusicSearchService(
     private val kugouApi = KugouApi(HttpClient())
     private val qqMusicApi = QQMusicApi(HttpClient())
     private val neteaseApi = NeteaseApi(HttpClient())
+
+    // 2.9 平台切换优先级：QQ音乐 > 网易云音乐 > 酷狗音乐 > 酷我音乐（咪咕禁用，不参与切换）
+    private val PLATFORM_SWITCH_PRIORITY = listOf(
+        MusicPlatform.TX, MusicPlatform.WY, MusicPlatform.KG, MusicPlatform.KW
+    )
+
+    // 2.9 换源版本内存缓存（歌曲标识 → 目标平台版本 id 列表），防同一首歌反复内置搜索触发风控（参考洛雪 PC otherSourceCache）
+    private val platformSwitchCache = object : LinkedHashMap<String, List<Pair<MusicPlatform, String>>>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Pair<MusicPlatform, String>>>?): Boolean = size > 50
+    }
 
     /**
      * 搜索音乐
@@ -351,10 +362,12 @@ class MusicSearchService(
         quality: AudioQuality = AudioQuality.QUALITY_320K,
         excludeSourceIds: Set<String> = emptySet(),
         onSourceLoadFailed: (failedSourceName: String, nextSourceName: String?) -> Unit = { _, _ -> },
-        onSourceTrying: ((sourceName: String) -> Unit)? = null
+        onSourceTrying: ((sourceName: String) -> Unit)? = null,
+        // 2.9 播放失败尝试切换平台开关：开启后 JS 源解析失败时用同一源尝试其他平台版本
+        enablePlatformSwitch: Boolean = false
     ): ApiResponse<MusicPlayResult> = withContext(Dispatchers.IO) {
         try {
-            val result = tryFetchUrlOnce(song, quality, excludeSourceIds, onSourceLoadFailed, onSourceTrying)
+            val result = tryFetchUrlOnce(song, quality, excludeSourceIds, onSourceLoadFailed, onSourceTrying, enablePlatformSwitch)
             if (result != null) {
                 ApiResponse.success(result)
             } else {
@@ -375,7 +388,8 @@ class MusicSearchService(
         quality: AudioQuality,
         excludeSourceIds: Set<String>,
         onSourceLoadFailed: (String, String?) -> Unit,
-        onSourceTrying: ((String) -> Unit)? = null
+        onSourceTrying: ((String) -> Unit)? = null,
+        enablePlatformSwitch: Boolean = false
     ): MusicPlayResult? {
         // 2.8 恢复播放 URL 短期缓存（歌曲维度 key，URL 与歌曲绑定）：命中直接返回。
         // 意义：① 缓解解析接口按频率风控；② 断网时命中缓存 URL → play 走 CacheDataSource
@@ -436,16 +450,113 @@ class MusicSearchService(
                     // 2.8 空 URL 视为失败：回调失败信息并切下一个源（原来静默跳过，无提示且少试一个源）
                     Log.w(TAG, "JS源[${source.name}]返回空URL，尝试下一个源")
                     onSourceLoadFailed(source.name, candidates.getOrNull(index + 1)?.name)
+                    // 2.9 平台切换：开启后该源解析失败 → 用同一源尝试其他平台版本
+                    if (enablePlatformSwitch) {
+                        tryPlatformSwitch(song, quality, source, candidates.getOrNull(index + 1)?.name)?.let { return it }
+                    }
                 }
                 is SourceExecutionResult.Error -> {
                     Log.w(TAG, "JS源[${source.name}]获取URL失败，尝试下一个源: ${result.message}")
                     // 回调失败信息（失败源名 + 下一个要尝试的源名，没有则 null）
                     onSourceLoadFailed(source.name, candidates.getOrNull(index + 1)?.name)
+                    // 2.9 平台切换：开启后该源解析失败 → 用同一源尝试其他平台版本
+                    if (enablePlatformSwitch) {
+                        tryPlatformSwitch(song, quality, source, candidates.getOrNull(index + 1)?.name)?.let { return it }
+                    }
                 }
                 else -> {}
             }
         }
         return null
+    }
+
+    /**
+     * 2.9 平台切换：JS 源对当前平台解析失败后，用同一源尝试解析该歌曲在其他平台的版本。
+     * 目标平台 = 该源配置的平台（getSourcePlatforms，空集合=全部）- 当前平台 - 咪咕（禁用），
+     * 按优先级 QQ > 网易云 > 酷狗 > 酷我。用内置搜索按「歌名 歌手」找目标平台同名版本
+     * （必须取该平台自己的歌曲 id，否则源拿错平台的 id 去解析必然失败），再调同一 JS 源解析。
+     * 成功时 URL 缓存写原歌曲 key（平台|歌曲id|音质）——缓存锚定歌曲身份，平台切换不分裂缓存。
+     * @return 换源成功返回播放结果（actualPlatformKey=实际播放平台）；无目标平台或全部失败返回 null
+     */
+    private suspend fun tryPlatformSwitch(
+        song: Song,
+        quality: AudioQuality,
+        source: MusicSource,
+        nextSourceName: String?
+    ): MusicPlayResult? {
+        // 目标平台：源配置平台 - 当前平台 - 咪咕，按优先级排序
+        val configured = sourceManager.getSourcePlatforms(source.id)
+        val curKey = song.platform.key
+        val targets = PLATFORM_SWITCH_PRIORITY.filter { p ->
+            p.key != curKey && (configured.isEmpty() || configured.contains(p.key))
+        }
+        if (targets.isEmpty()) return null
+
+        // 换源版本内存缓存（防同一首歌反复内置搜索触发风控；suspend 上下文需显式读写）
+        val cacheKey = "${song.platform.key}|${song.id}"
+        val versions = platformSwitchCache[cacheKey] ?: findOtherPlatformVersions(song, targets).also {
+            platformSwitchCache[cacheKey] = it
+        }
+        for ((platform, musicId) in versions) {
+            if (musicId.isBlank()) continue
+            val result = sourceManager.getMusicUrlWithSource(
+                musicId = musicId,
+                quality = quality,
+                source = platform.key,
+                sourceId = source.id,
+                // 2.9 歌曲信息透传（JS 源按歌名搜索需要；换源版本歌手一般与原歌一致）
+                songName = song.name,
+                singer = song.singer
+            )
+            if (result is SourceExecutionResult.UrlSuccess && result.url.isNotEmpty()) {
+                Log.i(TAG, "JS源[${source.name}]切换平台到${platform.displayName}成功: ${song.name}（原平台${song.platform.displayName}）")
+                // URL 缓存写原歌曲 key（缓存锚定歌曲身份，平台切换不分裂缓存；下次直接命中，不再反复解析）
+                try {
+                    CacheManager.putUrl(CacheManager.songCacheKey(song, quality), result.url)
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+                    Log.w(TAG, "写入换源 URL 缓存失败: ${e.message}")
+                }
+                return MusicPlayResult(result.url, quality, source.id, actualPlatformKey = platform.key)
+            }
+            Log.w(TAG, "JS源[${source.name}]切换平台到${platform.displayName}失败: ${song.name}")
+        }
+        // 换源全失败：失败信息已由 onSourceLoadFailed 回调，这里只留日志（无下一源时补一条汇总日志）
+        if (versions.isNotEmpty() && nextSourceName == null) {
+            Log.w(TAG, "JS源[${source.name}]平台切换全部失败: ${song.name}")
+        }
+        return null
+    }
+
+    /**
+     * 2.9 内置搜索找目标平台同名歌曲版本，返回（平台, 平台歌曲 id）列表。
+     * 匹配优先取歌名与原名一致的版本，否则取搜索结果第一条（内置搜索相关度排序）。
+     */
+    private suspend fun findOtherPlatformVersions(
+        song: Song,
+        targets: List<MusicPlatform>
+    ): List<Pair<MusicPlatform, String>> {
+        val result = mutableListOf<Pair<MusicPlatform, String>>()
+        for (platform in targets) {
+            try {
+                val keyword = "${song.name} ${song.singer}".trim()
+                val resp = search(SearchParams(keyword = keyword, page = 1, pageSize = 10), platform)
+                val songs = resp.data?.songs ?: emptyList()
+                val matched = songs.firstOrNull { matchSongName(it.name, song.name) }
+                val musicId = matched?.id ?: songs.firstOrNull()?.id
+                result.add(platform to (musicId ?: ""))
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+                Log.w(TAG, "换源搜索失败 platform=${platform.key}: ${e.message}")
+            }
+        }
+        return result
+    }
+
+    /** 2.9 歌名轻量匹配（忽略大小写与标点，双向包含；防搜索结果第一条是 Live/翻唱版） */
+    private fun matchSongName(candidate: String, origin: String): Boolean {
+        val norm = { s: String -> s.filter { it.isLetterOrDigit() }.lowercase() }
+        val c = norm(candidate)
+        val o = norm(origin)
+        return c == o || (c.isNotEmpty() && o.isNotEmpty() && (c.contains(o) || o.contains(c)))
     }
 
     /**
@@ -685,5 +796,7 @@ private fun MusicItem.toSong(): Song {
 data class MusicPlayResult(
     val url: String,
     val quality: AudioQuality,
-    val sourceId: String? = null
+    val sourceId: String? = null,
+    // 2.9 平台切换：非空表示换源成功后的实际播放平台 key（原歌曲平台显示不变，仅播放版本切换）
+    val actualPlatformKey: String? = null
 )

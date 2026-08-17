@@ -33,6 +33,9 @@ class LXMusicApplication : Application() {
         // 初始化缓存管理器（音频 SimpleCache / URL 持久化缓存依赖 applicationContext）
         CacheManager.init(this)
 
+        // 2.8 异常日志导出：接管未捕获异常，崩溃堆栈写入 lx_logs/crash.log（设置页可经 Web /log 导出）
+        com.lxmusic.tv.data.log.LogExporter.init(this)
+
         // 初始化数据库
         database = LxMusicDatabase.getDatabase(this)
 

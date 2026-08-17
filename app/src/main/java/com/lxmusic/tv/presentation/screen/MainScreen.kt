@@ -48,6 +48,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -916,6 +917,10 @@ fun MainContent(
                 // 2.8 歌词设置
                 lyricTranslationEnabled = lyricTranslationEnabled,
                 onLyricTranslationEnabledChange = onLyricTranslationEnabledChange,
+                // 2.8 异常日志导出弹窗需要服务器地址
+                serverUrl = serverUrl,
+                // 2.8 异常日志：HTTP 未开启时询问是否启用
+                onEnableServer = onEnableServer,
                 contentEnterRequester = contentEnterRequester,
                 onExitToNav = { navRequesters[selectedTab].requestFocus() },
                 // 重复点击 tab 刷新信号：滚动回顶部
@@ -1831,6 +1836,10 @@ fun SettingsScreen(
     // 2.8 歌词设置：是否显示翻译歌词
     lyricTranslationEnabled: Boolean = true,
     onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
+    // 2.8 HTTP 服务器地址（异常日志导出弹窗显示 /log 地址；null=未开启服务器）
+    serverUrl: String? = null,
+    // 2.8 HTTP 未开启时点异常日志 → 询问是否启用（调用方负责启动服务器，如 viewModel.startServer）
+    onEnableServer: () -> Unit = {},
     contentEnterRequester: FocusRequester,
     onExitToNav: () -> Unit,
     // 重复点击 tab 刷新信号：>0 且变化时滚动回顶部
@@ -1844,14 +1853,28 @@ fun SettingsScreen(
     // 2.8 歌词设置弹窗
     var showLyricsDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
+    // 2.8 异常日志导出弹窗
+    var showLogExportDialog by remember { mutableStateOf(false) }
+    // 2.8 HTTP 未启用询问弹窗开关（异常日志需要 Web 端访问，未开服务器先询问）
+    var showEnableServerDialog by remember { mutableStateOf(false) }
+    // 2.8 是否在等待服务器启动后自动弹异常日志弹窗（询问弹窗点了「开启」）
+    var pendingLogDialogAfterServerStart by remember { mutableStateOf(false) }
+
+    // 2.8 服务器启动完成（serverUrl 变为非空）→ 自动弹出异常日志弹窗
+    LaunchedEffect(serverUrl) {
+        if (serverUrl != null && pendingLogDialogAfterServerStart) {
+            pendingLogDialogAfterServerStart = false
+            showLogExportDialog = true
+        }
+    }
 
     // 设置列表滚动状态（重复点击「设置」tab 时滚动回顶部）
     val settingsScrollState = rememberScrollState()
 
     // 进入子路由前点击的设置项索引（rememberSaveable：从子路由返回重新组合后仍可恢复）
     var lastClickedIndex by rememberSaveable { mutableIntStateOf(-1) }
-    // 各设置项的焦点请求器（用于返回后恢复焦点到点击的卡片；共 7 项：默认音乐平台/播放源管理/播放设置/歌词设置/界面设置/缓存管理/关于）
-    val itemRequesters = remember { List(7) { FocusRequester() } }
+    // 各设置项的焦点请求器（用于返回后恢复焦点到点击的卡片；共 8 项：默认音乐平台/播放源管理/播放设置/歌词设置/界面设置/缓存管理/异常日志/关于）
+    val itemRequesters = remember { List(8) { FocusRequester() } }
 
     // 重复点击「设置」tab：滚动回顶部（仅 tick 真正变化时，避免组件重建误触发）
     var lastRefreshTick by remember { mutableIntStateOf(refreshTick) }
@@ -1867,7 +1890,7 @@ fun SettingsScreen(
     LaunchedEffect(restoreTick) {
         if (restoreTick > 0 && restoreTick != lastRestoreTick) {
             lastRestoreTick = restoreTick
-            if (lastClickedIndex in 0..6) {
+            if (lastClickedIndex in 0..7) {
                 itemRequesters[lastClickedIndex].requestFocus()
             }
         }
@@ -1955,12 +1978,29 @@ fun SettingsScreen(
                 onExitToNav = onExitToNav
             )
 
+            // 2.8 异常日志导出：弹窗提示 Web 端地址（/log），手机/电脑浏览器查看并导出崩溃与运行日志。
+            // 点击时 HTTP 未开启 → 先询问是否启动，启动完成自动弹导出弹窗
+            SettingsItem(
+                title = "异常日志",
+                subtitle = "查看并导出应用崩溃记录与运行日志（Web 端访问）",
+                icon = Icons.Default.BugReport,
+                onClick = {
+                    if (serverUrl != null) {
+                        showLogExportDialog = true
+                    } else {
+                        showEnableServerDialog = true
+                    }
+                },
+                extraFocusRequester = itemRequesters[6],
+                onExitToNav = onExitToNav
+            )
+
             SettingsItem(
                 title = "关于",
                 subtitle = "版本号、说明等",
                 icon = Icons.Default.Info,
                 onClick = { showAboutDialog = true },
-                extraFocusRequester = itemRequesters[6],
+                extraFocusRequester = itemRequesters[7],
                 onExitToNav = onExitToNav
             )
         }
@@ -2002,6 +2042,136 @@ fun SettingsScreen(
     // 关于对话框：显示当前安装的版本号（versionName + versionCode），用于核对构建是否生效
     if (showAboutDialog) {
         AboutDialog(onDismiss = { showAboutDialog = false })
+    }
+
+    // 2.8 异常日志需要 Web 端访问：HTTP 未开启时询问是否启用（与搜索页扫码推送交互一致），
+    // 确认后启动服务器，serverUrl 更新 → LaunchedEffect 自动弹出异常日志弹窗
+    if (showEnableServerDialog) {
+        AlertDialog(
+            onDismissRequest = { showEnableServerDialog = false },
+            containerColor = LXSurfaceDialog,
+            title = {
+                Text(
+                    text = "开启 HTTP 服务器？",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LXTextPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "异常日志需要 HTTP 服务器支持。开启后手机/电脑浏览器打开 /log 页面，即可查看并导出应用崩溃记录与运行日志。",
+                    fontSize = 14.sp,
+                    color = LXTextSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showEnableServerDialog = false
+                    pendingLogDialogAfterServerStart = true
+                    onEnableServer()
+                }) {
+                    Text("开启", color = LXPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEnableServerDialog = false }) {
+                    Text("取消", color = LXTextSecondary)
+                }
+            }
+        )
+    }
+
+    // 2.8 异常日志导出对话框：提示 Web 端地址（/log）
+    if (showLogExportDialog) {
+        LogExportDialog(
+            serverUrl = serverUrl,
+            onDismiss = { showLogExportDialog = false }
+        )
+    }
+}
+
+/**
+ * 2.8 异常日志导出对话框：开启 HTTP 服务器后，手机/电脑浏览器访问 http://电视IP:5777/log
+ * 查看并导出应用异常日志（崩溃记录 crash.log + 运行日志 logcat）。
+ */
+@Composable
+fun LogExportDialog(
+    serverUrl: String?,
+    onDismiss: () -> Unit
+) {
+    val logUrl = serverUrl?.let { "$it/log" } ?: "需先开启 HTTP 服务器"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LXSurfaceDialog,
+        title = {
+            Text(
+                text = "异常日志导出",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = LXTextPrimary
+            )
+        },
+        text = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = "开启 HTTP 服务器后，用手机/电脑浏览器打开下方地址，可查看并导出应用异常日志（崩溃记录 + 运行日志）。加 ?download=1 可直接下载日志文件。",
+                    fontSize = 13.sp,
+                    color = LXTextSecondary
+                )
+                // 2.8 URL 显示在二维码上方：加粗醒目，方便 PC 用户直接输入访问
+                Text(
+                    text = logUrl,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LXPrimary
+                )
+                if (serverUrl != null) {
+                    val qr = generateSettingsQrCode(logUrl, 300)
+                    if (qr != null) {
+                        Image(
+                            bitmap = qr,
+                            contentDescription = "异常日志导出二维码",
+                            modifier = Modifier.size(280.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = "需先在设置中开启 HTTP 服务器；地址为电视当前局域网 IP",
+                    fontSize = 12.sp,
+                    color = LXTextSecondary
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭", color = LXTextSecondary)
+            }
+        },
+        dismissButton = {}
+    )
+}
+
+/**
+ * 2.8 生成二维码 ImageBitmap（zxing core，纯本地编码）——异常日志导出弹窗用
+ */
+private fun generateSettingsQrCode(content: String, size: Int = 300): androidx.compose.ui.graphics.ImageBitmap? {
+    return try {
+        val hints = mapOf(com.google.zxing.EncodeHintType.MARGIN to 1)
+        val matrix = com.google.zxing.qrcode.QRCodeWriter()
+            .encode(content, com.google.zxing.BarcodeFormat.QR_CODE, size, size, hints)
+        val pixels = IntArray(size * size)
+        for (y in 0 until size) {
+            for (x in 0 until size) {
+                pixels[y * size + x] = if (matrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+            }
+        }
+        android.graphics.Bitmap.createBitmap(pixels, size, size, android.graphics.Bitmap.Config.RGB_565).asImageBitmap()
+    } catch (e: Exception) {
+        null
     }
 }
 

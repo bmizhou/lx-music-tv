@@ -1,5 +1,6 @@
 package com.lxmusic.tv
 
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
@@ -439,6 +440,7 @@ fun LXMusicApp() {
             val sources by viewModel.sources.collectAsState()
             val serverRunning by viewModel.serverRunning.collectAsState()
             val serverUrl by viewModel.serverUrl.collectAsState()
+            val context = LocalContext.current
 
             SourceManagementScreen(
                 sources = sources,
@@ -453,6 +455,13 @@ fun LXMusicApp() {
                 onGetSourcePlatforms = { sourceId -> viewModel.getSourcePlatforms(sourceId) },
                 onSetSourcePlatforms = { sourceId, platforms ->
                     viewModel.setSourcePlatforms(sourceId, platforms)
+                },
+                // 2.9 播放失败尝试切换平台开关（lx_settings 持久化，默认启用；与 MainViewModel 共用 key）
+                platformSwitchEnabled = context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
+                    .getBoolean(MainViewModel.KEY_PLATFORM_SWITCH, true),
+                onTogglePlatformSwitch = { enabled ->
+                    context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
+                        .edit().putBoolean(MainViewModel.KEY_PLATFORM_SWITCH, enabled).apply()
                 }
             )
         }

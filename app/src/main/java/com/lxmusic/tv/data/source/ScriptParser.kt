@@ -9,6 +9,9 @@ import java.util.regex.Pattern
  */
 class ScriptParser {
 
+    /** 匹配 \xNN 十六进制转义（Kotlin 字符串中 \\ 表示单个反斜杠） */
+    private val HEX_ESCAPE_REGEX = Regex("\\\\x([0-9a-fA-F]{2})")
+
     /**
      * 解析脚本内容
      * @param scriptContent JS脚本内容
@@ -16,14 +19,20 @@ class ScriptParser {
      */
     fun parse(scriptContent: String): ParseResult {
         return try {
-            // 1. 解析元数据
+            // 0. 先解码 \xNN 十六进制转义：混淆器会把关键字符串（如 'lx'）编码为
+            //    '\x6c\x78' 形式（globalThis['\x6c\x78'] = globalThis['lx']），
+            //    不解码则下面的字面量匹配（globalThis['lx']、kw: 等）全部落空，
+            //    导致洛雪 PC 能导入的混淆源被判「脚本格式不正确」。
+            val decoded = decodeHexEscapes(scriptContent)
+
+            // 1. 解析元数据（@name 等注解在文件头注释里，不受混淆影响，用原文即可）
             val metadata = parseMetadata(scriptContent)
 
-            // 2. 解析支持的平台和音质
-            val platforms = parsePlatforms(scriptContent)
+            // 2. 解析支持的平台和音质（用解码后的内容：混淆源里 kw:/sources:/音质 也是编码的）
+            val platforms = parsePlatforms(decoded)
 
-            // 3. 验证脚本格式
-            if (!validateScript(scriptContent)) {
+            // 3. 验证脚本格式（用解码后的内容，否则 globalThis['\x6c\x78'] 匹配不上字面量）
+            if (!validateScript(decoded)) {
                 return ParseResult.Error("脚本格式不正确")
             }
 
@@ -34,6 +43,17 @@ class ScriptParser {
             )
         } catch (e: Exception) {
             ParseResult.Error("解析脚本失败: ${e.message}")
+        }
+    }
+
+    /**
+     * 解码 \xNN 十六进制转义（如 '\x6c\x78' → 'lx'）。
+     * 仅供格式校验/平台识别使用，不影响存入数据库的原始脚本内容。
+     * 注意：替换串可能含 '$'（如 \x24 → '$'），须用 lambda 形式避免被当作分组引用。
+     */
+    private fun decodeHexEscapes(input: String): String {
+        return HEX_ESCAPE_REGEX.replace(input) { m ->
+            m.groupValues[1].toInt(16).toChar().toString()
         }
     }
 

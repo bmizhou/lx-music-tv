@@ -67,6 +67,9 @@ fun SourceManagementScreen(
     onFocusFloatingBall: () -> Unit = {},
     onGetSourcePlatforms: (String) -> Set<String> = { emptySet() },
     onSetSourcePlatforms: (String, Set<String>) -> Unit = { _, _ -> },
+    // 2.9 播放失败尝试切换平台开关（默认启用；开启后 JS 源解析失败时自动用同一源尝试其他平台版本）
+    platformSwitchEnabled: Boolean = true,
+    onTogglePlatformSwitch: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showDeleteDialog by remember { mutableStateOf<MusicSource?>(null) }
@@ -161,6 +164,15 @@ fun SourceManagementScreen(
                     isRunning = serverRunning,
                     serverUrl = serverUrl,
                     onToggle = onToggleServer,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            // 2.9 播放失败尝试切换平台开关（开启后 JS 源解析失败时自动用同一源尝试其他平台版本）
+            item {
+                PlatformSwitchCard(
+                    enabled = platformSwitchEnabled,
+                    onToggle = onTogglePlatformSwitch,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -313,6 +325,59 @@ fun ServerStatusCard(
                     color = LXOnCardDarkSecondary
                 )
             }
+        }
+    }
+}
+
+/**
+ * 2.9 播放失败尝试切换平台开关卡片
+ * 开启后：JS 源解析当前平台失败时，自动用同一源尝试解析该歌曲在其他平台的版本
+ * （切换顺序 QQ音乐 → 网易云音乐 → 酷狗音乐 → 酷我音乐；咪咕不参与；只切换到该源已配置的平台）。
+ * 与 HTTP 服务器卡片同风格（深色卡片 + Switch，焦点在 Switch 上）。
+ */
+@Composable
+fun PlatformSwitchCard(
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = LXCardDark),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "播放失败尝试切换音乐平台",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = LXOnCardDark
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "JS 源解析失败时，自动用同一源尝试其他平台版本",
+                    fontSize = 12.sp,
+                    color = LXOnCardDarkSecondary
+                )
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Switch(
+                checked = enabled,
+                onCheckedChange = onToggle,
+                modifier = Modifier
+                    // 与 HTTP 服务器开关一致：常态透明边框，仅聚焦时主题色边框
+                    .lxSelectorFocus(shape = RoundedCornerShape(10.dp), glow = false, animated = false),
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = LXPrimary,
+                    uncheckedThumbColor = Color.White,
+                    uncheckedTrackColor = LXOnCardDarkSecondary
+                )
+            )
         }
     }
 }

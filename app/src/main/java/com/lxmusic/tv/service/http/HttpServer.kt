@@ -116,6 +116,8 @@ class HttpServer(
             uri == "/search" -> serveSearchPage()
             uri == "/api/search" && method == Method.POST -> handleSearchSubmit(session)
             uri == "/api/search/clear" && method == Method.POST -> handleSearchClear()
+            // 2.8 异常日志导出（GET /log，?download=1 触发下载）
+            uri == "/log" -> serveLog(session)
             uri == "/api/status" -> serveStatus()
             uri.startsWith("/static/") -> serveStaticFile(uri)
             else -> serveNotFound()
@@ -885,6 +887,34 @@ class HttpServer(
 
     private fun serveNotFound(): Response {
         return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404 Not Found")
+    }
+
+    /**
+     * 2.8 异常日志导出（GET /log）
+     * 导出内容：历史崩溃日志（crash.log）+ 本进程实时 logcat（LX-* 等应用日志）。
+     * ?download=1 时附加 Content-Disposition 触发浏览器下载。
+     */
+    private fun serveLog(session: IHTTPSession): Response {
+        return try {
+            val exportFile = com.lxmusic.tv.data.log.LogExporter.exportToFile(context)
+            val response = newFixedLengthResponse(
+                Response.Status.OK,
+                "text/plain; charset=utf-8",
+                exportFile.inputStream(),
+                exportFile.length()
+            )
+            if (session.parms?.get("download") == "1") {
+                response.addHeader("Content-Disposition", "attachment; filename=\"lx_logs.txt\"")
+            }
+            response
+        } catch (e: Exception) {
+            Log.e(TAG, "导出日志失败: ${e.message}")
+            newFixedLengthResponse(
+                Response.Status.INTERNAL_ERROR,
+                "text/plain; charset=utf-8",
+                "导出日志失败: ${e.message}"
+            )
+        }
     }
 
     private fun createSuccessResponse(message: String): Response {

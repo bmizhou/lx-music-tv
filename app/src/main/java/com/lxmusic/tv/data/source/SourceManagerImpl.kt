@@ -218,7 +218,11 @@ class SourceManagerImpl(
                     scriptContent = scriptContent
                 )
             }
-            is ParseResult.Error -> null
+            is ParseResult.Error -> {
+                // 记录失败原因（设置-异常日志/Web /log 可查 logcat，便于排查导入失败）
+                Log.w(TAG, "播放源解析失败: ${parseResult.message}")
+                null
+            }
         }
     }
 

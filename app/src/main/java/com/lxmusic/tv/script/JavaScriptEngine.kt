@@ -1,5 +1,6 @@
 package com.lxmusic.tv.script
 
+import android.util.Base64
 import android.util.Log
 import com.lxmusic.tv.network.HttpClient
 import com.whl.quickjs.android.QuickJSLoader
@@ -13,11 +14,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -80,6 +85,11 @@ class JavaScriptEngine {
     private val pendingTimers = ConcurrentHashMap<Long, Long>()
     /** 已取消的定时器 id */
     private val clearedTimers = ConcurrentHashMap.newKeySet<Long>()
+    /** 2.8 在途请求数（JS 侧 lx.request 已发出、尚未注入响应的数量）。
+     *  仅 drain/初始化阶段使用：防止「请求刚发出、Java 尚未登记 pendingHttp」时
+     *  runDrainLoop 误判空闲提前退出，导致异步注册型音源（如六音）的响应无人注入、
+     *  request 处理器永不注册。请求发出 +1，响应注入完成 -1。 */
+    private val activeRequestCount = java.util.concurrent.atomic.AtomicInteger(0)
     /** 脚本 send(EVENT_NAMES.inited, data) 的数据（JSON 字符串） */
     @Volatile
     private var initEventDataJson: String? = null
@@ -425,6 +435,7 @@ class JavaScriptEngine {
         pendingHttp.clear()
         pendingTimers.clear()
         clearedTimers.clear()
+        activeRequestCount.set(0)
     }
 
     /** 销毁当前 context（仅引擎线程调用） */
@@ -467,10 +478,11 @@ class JavaScriptEngine {
 
         val g = ctx.getGlobalObject()
 
-        // JS -> Java 桥（HTTP 发起 / inited / 定时器 / 日志）
+        // JS -> Java 桥（HTTP 发起 / inited / 定时器 / 日志 / AES / MD5）
+        // 返回 handleNativeCall 的结果：同步型 action（aes_encrypt/md5）返回结果字符串给 JS，
+        // 异步型（request/inited/timer）返回 null（与旧行为一致）
         g.setProperty("__lx_native_call__", JSCallFunction { args ->
             handleNativeCall(args)
-            null
         })
 
         context = ctx
@@ -488,6 +500,8 @@ class JavaScriptEngine {
             when (action) {
                 // 发起 HTTP 请求：登记并让 IO 协程执行（不阻塞引擎线程）
                 "request" -> {
+                    // 2.8 在途请求计数：drain 循环据此等待异步注册型音源的响应
+                    activeRequestCount.incrementAndGet()
                     val data = JSONObject(dataJson)
                     launchHttpRequest(data)
                     null
@@ -527,6 +541,22 @@ class JavaScriptEngine {
                     }
                     null
                 }
+                // 2.8 utils.crypto.aesEncrypt：AES-128-CBC(PKCS7)/ECB(PKCS5) 加密，
+                // 入参 data/key/iv 均为 base64，返回 base64 密文（洛雪 utils 兼容）
+                "aes_encrypt" -> {
+                    val data = JSONObject(dataJson)
+                    aesEncryptBase64(
+                        dataB64 = data.optString("data"),
+                        keyB64 = data.optString("key"),
+                        ivB64 = data.optString("iv"),
+                        mode = data.optString("mode", "cbc")
+                    )
+                }
+                // 2.8 utils.crypto.md5：MD5 十六进制（洛雪移动版先 encodeURIComponent 在 JS 侧完成）
+                "md5" -> {
+                    val data = JSONObject(dataJson)
+                    md5Hex(data.optString("str"))
+                }
                 else -> {
                     Log.w(TAG, "未知 native 调用: $action")
                     null
@@ -539,10 +569,42 @@ class JavaScriptEngine {
     }
 
     /**
+     * 2.8 AES-128 加密（洛雪 utils.crypto.aesEncrypt 的 Java 实现）。
+     * 入参均为 base64（JS 侧 dataToB64 转换），返回 base64 密文。
+     * mode=cbc → AES/CBC/PKCS7Padding（需 16 字节 IV）；mode=ecb → AES/ECB/PKCS5Padding。
+     */
+    private fun aesEncryptBase64(dataB64: String, keyB64: String, ivB64: String, mode: String): String? {
+        return try {
+            val keyBytes = Base64.decode(keyB64, Base64.DEFAULT)
+            if (keyBytes.size != 16) throw IllegalArgumentException("AES-128 密钥须为 16 字节，实际 ${keyBytes.size}")
+            val dataBytes = Base64.decode(dataB64, Base64.DEFAULT)
+            val keySpec = SecretKeySpec(keyBytes, "AES")
+            val cipher: Cipher = if (mode == "ecb") {
+                Cipher.getInstance("AES/ECB/PKCS5Padding").apply { init(Cipher.ENCRYPT_MODE, keySpec) }
+            } else {
+                val ivBytes = Base64.decode(ivB64, Base64.DEFAULT)
+                if (ivBytes.size != 16) throw IllegalArgumentException("AES-CBC IV 须为 16 字节，实际 ${ivBytes.size}")
+                Cipher.getInstance("AES/CBC/PKCS7Padding").apply {
+                    init(Cipher.ENCRYPT_MODE, keySpec, IvParameterSpec(ivBytes))
+                }
+            }
+            Base64.encodeToString(cipher.doFinal(dataBytes), Base64.NO_WRAP)
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+            Log.e(TAG, "aes_encrypt 失败: ${e.message}")
+            null
+        }
+    }
+
+    /** 2.8 MD5 十六进制（洛雪 utils.crypto.md5，入参已由 JS 侧 encodeURIComponent） */
+    private fun md5Hex(input: String): String {
+        val digest = MessageDigest.getInstance("MD5").digest(input.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { String.format("%02x", it) }
+    }
+
+    /**
      * 发起 HTTP 请求（IO 协程执行，结果放入 pendingHttp 等待引擎线程注入）
      */
-    private fun launchHttpRequest(data: JSONObject) {
-        val key = data.optString("key")
+    private fun launchHttpRequest(data: JSONObject) {        val key = data.optString("key")
         val url = data.optString("url")
         val method = data.optString("method", "get").uppercase()
         val body = data.optString("body", "")
@@ -605,6 +667,8 @@ class JavaScriptEngine {
                     } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                         Log.e(TAG, "注入 HTTP 响应失败: ${e.message}")
                     }
+                    // 2.8 响应已注入（无论成功失败都算处理完），在途计数减一
+                    activeRequestCount.decrementAndGet()
                 }
             }
         } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
@@ -639,10 +703,20 @@ class JavaScriptEngine {
         }
     }
 
-    /** 短暂 drain：驱动顶层异步任务（版本检查等在回调里 send inited），直到收到 inited 或超时 */
+    /**
+     * 短暂 drain：驱动顶层异步任务（版本检查/异步注册型音源在回调里 send(inited) / on(request)），
+     * 直到收到 inited、request 处理器已注册，或确认无待处理异步任务后退出。
+     *
+     * 2.8 竞态修复：退出条件从「pendingHttp 与 pendingTimers 均空」改为
+     * 「在途请求数 activeRequestCount 为 0 且均空且已驱动至少一轮」——
+     * 六音等异步注册型音源自举后先发请求（lx.request），若 Java 侧尚未把响应登记进
+     * pendingHttp，旧条件会误判空闲提前退出，导致响应无人注入、request 处理器永不注册。
+     */
     private suspend fun runDrainLoop(maxMs: Long) {
         val deadline = System.currentTimeMillis() + maxMs
+        var rounds = 0
         while (System.currentTimeMillis() < deadline) {
+            rounds++
             injectResponses()
             injectTimers()
             try {
@@ -650,8 +724,22 @@ class JavaScriptEngine {
             } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 break
             }
-            // 收到 inited 或没有待处理异步任务时结束
-            if (initEventDataJson != null || (pendingHttp.isEmpty() && pendingTimers.isEmpty())) {
+            // 收到 inited → 初始化完成
+            if (initEventDataJson != null) break
+            // request 处理器已注册（异步注册型音源：请求响应后注册）→ 初始化完成
+            val handlerRegistered = try {
+                onEngineThread {
+                    val g = global ?: return@onEngineThread false
+                    val check = g.getJSFunction("__lx_has_handler__")
+                    (check?.call("request") as? Boolean) ?: false
+                }
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+                false
+            }
+            if (handlerRegistered) break
+            // 无在途请求、无待注入响应、无待触发定时器，且已驱动至少一轮：
+            // 首轮不退出（请求可能刚发出、Java 侧尚未登记 pendingHttp，见 activeRequestCount）
+            if (rounds > 1 && activeRequestCount.get() == 0 && pendingHttp.isEmpty() && pendingTimers.isEmpty()) {
                 break
             }
             Thread.sleep(WAIT_STEP_MS)
