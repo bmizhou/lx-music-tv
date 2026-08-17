@@ -395,6 +395,10 @@ class MusicSearchService(
         // 意义：① 缓解解析接口按频率风控；② 断网时命中缓存 URL → play 走 CacheDataSource
         // 读 SimpleCache 音频缓存，实现真离线播放。URL 失效（过期/坏链）由 onPlaybackError
         // 移除缓存并重新解析（见 MainViewModel），不会死循环。
+        // 2.9 离线播放治本：URL 缓存命中（**含过期条目**）时，只要本地 SimpleCache 已有
+        // 该歌曲音频缓存即可直接播放（CacheDataSource 读本地不触网）——离线可播性绑定
+        // 音频缓存生命周期（LRU 2GB 长期有效），不再被 URL 时效卡住。仅当「过期且无本地音频」
+        // 才放弃缓存 URL 走解析（有网时自动刷新）。
         val urlCacheKey = CacheManager.songCacheKey(song, quality)
         val cachedUrl = try {
             CacheManager.getUrl(urlCacheKey)
@@ -402,10 +406,34 @@ class MusicSearchService(
             null
         }
         if (!cachedUrl.isNullOrEmpty()) {
-            Log.i(TAG, "命中播放 URL 缓存: ${song.name} key=$urlCacheKey")
-            // sourceId=null：缓存未记录来源源；播放失败时走 onPlaybackError 的
-            // badSourceId==null 分支（移除缓存 + 重新解析换源）
-            return MusicPlayResult(cachedUrl, quality, null)
+            val urlFresh = try {
+                CacheManager.isUrlFresh(urlCacheKey)
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+                false
+            }
+            val hasLocalAudio = try {
+                CacheManager.hasAudioCache(urlCacheKey)
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+                false
+            }
+            // 2.9 缓存优先：本地音频缓存（含部分/完整分片）优先级最高，无论 URL 是否过期都直接用——
+            // CacheDataSource 播放层读本地分片不触网（离线/在线均可）；URL 仅用于构造 MediaItem。
+            // 其次才是 URL 新鲜（TTL 内）直接播（在线路径）；「过期且无本地音频」才重新解析（有网自愈）。
+            when {
+                hasLocalAudio -> {
+                    Log.i(TAG, "命中本地音频缓存${if (urlFresh) "" else "（URL 已过期，离线可播）"}: ${song.name} key=$urlCacheKey")
+                    // sourceId=null：缓存未记录来源源；播放失败时走 onPlaybackError 的
+                    // badSourceId==null 分支（移除缓存 + 重新解析换源）
+                    return MusicPlayResult(cachedUrl, quality, null)
+                }
+                urlFresh -> {
+                    Log.i(TAG, "命中 URL 缓存（本地无音频，在线播放）: ${song.name} key=$urlCacheKey")
+                    return MusicPlayResult(cachedUrl, quality, null)
+                }
+                else -> {
+                    Log.i(TAG, "URL 缓存过期且本地无音频缓存，重新解析: ${song.name}")
+                }
+            }
         }
 
         // 按优先级遍历启用的 JS 源（先启用/先加载的优先级最高），
@@ -447,22 +475,23 @@ class MusicSearchService(
                         }
                         return MusicPlayResult(result.url, quality, source.id)
                     }
-                    // 2.8 空 URL 视为失败：回调失败信息并切下一个源（原来静默跳过，无提示且少试一个源）
-                    Log.w(TAG, "JS源[${source.name}]返回空URL，尝试下一个源")
-                    onSourceLoadFailed(source.name, candidates.getOrNull(index + 1)?.name)
-                    // 2.9 平台切换：开启后该源解析失败 → 用同一源尝试其他平台版本
+                    // 2.8 空 URL 视为失败（原来静默跳过，无提示且少试一个源）
+                    Log.w(TAG, "JS源[${source.name}]返回空URL")
+                    // 2.9 平台切换优先：先尝试同一源切其他平台版本，全部失败才提示「尝试下一个源」。
+                    // （顺序很重要：多源时若先弹「尝试下一个源」再切平台，用户会误以为直接跳过了平台切换）
                     if (enablePlatformSwitch) {
                         tryPlatformSwitch(song, quality, source, candidates.getOrNull(index + 1)?.name)?.let { return it }
                     }
+                    onSourceLoadFailed(source.name, candidates.getOrNull(index + 1)?.name)
                 }
                 is SourceExecutionResult.Error -> {
-                    Log.w(TAG, "JS源[${source.name}]获取URL失败，尝试下一个源: ${result.message}")
-                    // 回调失败信息（失败源名 + 下一个要尝试的源名，没有则 null）
-                    onSourceLoadFailed(source.name, candidates.getOrNull(index + 1)?.name)
-                    // 2.9 平台切换：开启后该源解析失败 → 用同一源尝试其他平台版本
+                    Log.w(TAG, "JS源[${source.name}]获取URL失败: ${result.message}")
+                    // 2.9 平台切换优先：先尝试同一源切其他平台版本，全部失败才提示「尝试下一个源」
                     if (enablePlatformSwitch) {
                         tryPlatformSwitch(song, quality, source, candidates.getOrNull(index + 1)?.name)?.let { return it }
                     }
+                    // 回调失败信息（失败源名 + 下一个要尝试的源名，没有则 null）
+                    onSourceLoadFailed(source.name, candidates.getOrNull(index + 1)?.name)
                 }
                 else -> {}
             }

@@ -441,6 +441,13 @@ fun LXMusicApp() {
             val serverRunning by viewModel.serverRunning.collectAsState()
             val serverUrl by viewModel.serverUrl.collectAsState()
             val context = LocalContext.current
+            // 2.9 播放失败尝试切换平台开关状态（Compose state 驱动 UI 即时刷新，见下方注释）
+            val platformSwitchState = remember {
+                mutableStateOf(
+                    context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
+                        .getBoolean(MainViewModel.KEY_PLATFORM_SWITCH, true)
+                )
+            }
 
             SourceManagementScreen(
                 sources = sources,
@@ -457,9 +464,10 @@ fun LXMusicApp() {
                     viewModel.setSourcePlatforms(sourceId, platforms)
                 },
                 // 2.9 播放失败尝试切换平台开关（lx_settings 持久化，默认启用；与 MainViewModel 共用 key）
-                platformSwitchEnabled = context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
-                    .getBoolean(MainViewModel.KEY_PLATFORM_SWITCH, true),
+                // 状态提升为 Compose state：点击立即更新 UI（只写 prefs 不触发重组）；NavHost 进出该页重建 remember → 每次进入重新读持久化值
+                platformSwitchEnabled = platformSwitchState.value,
                 onTogglePlatformSwitch = { enabled ->
+                    platformSwitchState.value = enabled
                     context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
                         .edit().putBoolean(MainViewModel.KEY_PLATFORM_SWITCH, enabled).apply()
                 }

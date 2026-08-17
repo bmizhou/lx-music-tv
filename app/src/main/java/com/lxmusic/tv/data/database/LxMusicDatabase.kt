@@ -326,6 +326,11 @@ interface CacheItemDao {
     @Query("SELECT * FROM cache_items WHERE `key` = :key AND expireAt > :now")
     suspend fun getValid(key: String, now: Long): CacheItemEntity?
 
+    // 2.9 不过滤过期时间查询：断网离线播放时，URL 过期但本地 SimpleCache 有音频缓存
+    // 仍可用旧 URL 构造 MediaItem（CacheDataSource 读本地不触网），见 CacheManager.getUrl
+    @Query("SELECT * FROM cache_items WHERE `key` = :key LIMIT 1")
+    suspend fun getByKey(key: String): CacheItemEntity?
+
     // 2.8 按 key 删除（播放失败时清掉坏 URL 缓存，防后续播放命中污染）
     @Query("DELETE FROM cache_items WHERE `key` = :key")
     suspend fun deleteByKey(key: String)

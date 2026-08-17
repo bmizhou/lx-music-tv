@@ -31,6 +31,9 @@ object CacheManager {
     private const val LYRIC_SUB_DIR = "lx_cache/lyric"
     // 播放 URL 短期缓存参数
     private const val URL_CACHE_MAX = 200
+    // URL 新鲜度 TTL（2h）：TTL 内视为新鲜可直接播放；过期后若本地 SimpleCache 有该歌曲
+    // 音频缓存仍可离线播放（getUrl 返回含过期条目 + hasAudioCache 判断，见 getUrl/isUrlFresh），
+    // 仅「过期且无本地音频」才重新解析（有网自愈）。URL 失效由 onPlaybackError 移除缓存并重新解析兜底。
     private const val URL_CACHE_TTL_MS = 2 * 60 * 60 * 1000L
     // 音频缓存上限（LRU 淘汰）
     private const val AUDIO_CACHE_MAX_BYTES = 2L * 1024 * 1024 * 1024
@@ -233,24 +236,50 @@ object CacheManager {
             size > URL_CACHE_MAX
     }
 
-    /** 命中且未过期返回 URL，否则返回 null（内存未命中时查 Room 持久化，命中则回填内存） */
+    /**
+     * 命中返回 URL（**含过期条目**）：断网离线播放时，URL 即使过期也能用——
+     * 只要本地 SimpleCache 有该歌曲音频缓存，CacheDataSource 读本地不触网即可播放。
+     * URL 新鲜度由 isUrlFresh 判断；过期且无本地音频的 URL 由播放层放弃并重新解析。
+     * 内存未命中时查 Room 持久化（不过滤时间），命中则回填内存。
+     */
     @Synchronized
     fun getUrl(key: String): String? {
-        val now = System.currentTimeMillis()
-        urlCache[key]?.let { e ->
-            if (now <= e.expireAt) return e.url
-            urlCache.remove(key)
-        }
-        // Room 持久化兜底（跨会话命中）
+        urlCache[key]?.let { return it.url }
+        // Room 持久化兜底（跨会话命中，含过期条目）
         return try {
             val ctx = requireContext()
             val item = runBlocking {
-                LxMusicDatabase.getDatabase(ctx).cacheItemDao().getValid(key, now)
+                LxMusicDatabase.getDatabase(ctx).cacheItemDao().getByKey(key)
             } ?: return null
             urlCache[key] = UrlEntry(item.value, item.expireAt)
             item.value
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /** URL 缓存是否仍在有效期内（TTL 内=在线可直接播放；过期但本地有音频缓存仍可离线播放，见 getUrl） */
+    @Synchronized
+    fun isUrlFresh(key: String): Boolean {
+        val now = System.currentTimeMillis()
+        urlCache[key]?.let { return now <= it.expireAt }
+        return try {
+            val ctx = requireContext()
+            runBlocking {
+                LxMusicDatabase.getDatabase(ctx).cacheItemDao().getValid(key, now)
+            } != null
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 本地 SimpleCache 是否已有该歌曲 key 的音频缓存分片（true=可离线播放，URL 过期也无妨） */
+    fun hasAudioCache(key: String): Boolean {
+        if (key.isBlank()) return false
+        return try {
+            getAudioCache(requireContext()).isCached(key, 0, Long.MAX_VALUE)
+        } catch (e: Exception) {
+            false
         }
     }
 
