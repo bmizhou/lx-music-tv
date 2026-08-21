@@ -81,14 +81,18 @@ object LogExporter {
             "======== 应用崩溃日志（crash.log） ========\n（暂无崩溃记录）\n\n"
         }
 
-        // 实时 dump 本进程 logcat（LX-* 等应用自身日志；Android 允许应用读取自己 UID 的日志）
+        // 实时 dump 本进程 logcat（应用自身日志；Android 允许应用读取自己 UID 的日志）。
+        // 2.9 过滤系统组件噪音（HWUI/MediaCodec/CCodec*/Codec2*/BufferPool 等播放器与渲染管线、
+        // Compiler/JIT 编译日志、WindowOnBackDispatcher 返回键等），只保留应用与平台 API 日志，
+        // 避免 Web 端 /log 被「Image decoding logging dropped!」之类刷屏；-t 4000 保证过滤后信息量。
         val logcatContent = try {
-            val process = Runtime.getRuntime().exec(
-                arrayOf("logcat", "-d", "-v", "time", "--pid=${android.os.Process.myPid()}", "-t", "2000")
-            )
+            val pid = android.os.Process.myPid()
+            val cmd = "logcat -d -v time --pid=$pid -t 4000 2>/dev/null | grep -vE " +
+                "'(HWUI|MediaCodec|CCodecBuffers|CCodecConfig|CCodecBufferChannel|Codec2Client|BufferPoolAccessor2\\.0|hw-BpHwBinder|WindowOnBackDispatcher|Compiler|JIT|OpenGLRenderer|Skia|EGL_emulation|Gralloc|AudioTrack|AudioFlinger)'"
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
             val text = process.inputStream.bufferedReader().readText()
             process.waitFor()
-            "======== 运行日志（logcat，最近 2000 行） ========\n$text"
+            "======== 运行日志（logcat，最近 4000 行，已过滤系统组件噪音） ========\n$text"
         } catch (e: Exception) {
             Log.w(TAG, "读取 logcat 失败（可能无权限），仅导出崩溃日志: ${e.message}")
             "======== 运行日志（logcat） ========\n（读取失败：${e.message}）"
