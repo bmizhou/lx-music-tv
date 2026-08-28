@@ -14,8 +14,8 @@ android {
         applicationId = "com.lxmusic.tv"
         minSdk = 23
         targetSdk = 37
-        versionCode = 251
-        versionName = "2.9.202608181313"
+        versionCode = 260
+        versionName = "2.9.202608280200"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -26,10 +26,10 @@ android {
 //
     buildTypes {
         release {
-            ndk {
-                abiFilters.clear()
-                abiFilters.add("arm64-v8a")
-            }
+//            ndk {
+//                abiFilters.clear()
+//                abiFilters.add("arm64-v8a")
+//            }
 
             optimization {
                 enable = true // Enables code and resource optimizations.

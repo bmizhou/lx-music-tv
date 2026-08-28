@@ -1,5 +1,12 @@
 package com.lxmusic.tv.presentation.screen
 
+import android.content.Context
+import android.text.InputType
+import android.view.Gravity
+import android.view.KeyEvent as AndroidKeyEvent
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -25,14 +32,19 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.widget.addTextChangedListener
 import com.lxmusic.tv.presentation.component.lxBackButtonFocus
 import com.lxmusic.tv.presentation.component.lxCircleButtonFocus
 import com.lxmusic.tv.presentation.component.lxFocusBorder
@@ -160,6 +172,40 @@ fun SearchScreen(
     var showEnableServerDialog by remember { mutableStateOf(false) }
     // 2.8 是否在等待服务器启动后自动弹二维码（用户在询问弹窗点了「开启」）
     var pendingQrAfterServerStart by remember { mutableStateOf(false) }
+    // 2.9 搜索框聚焦状态（用于外层 Compose 卡片 100% 满铺高亮渲染）
+    var searchBoxFocused by remember { mutableStateOf(false) }
+    // 2.8 二维码推送按钮焦点状态
+    var qrBtnFocused by remember { mutableStateOf(false) }
+
+    // 2.9 保持回调与状态最新值，避免原生 View 监听器闭包捕获陈旧值
+    val currentSearchQuery = rememberUpdatedState(searchQuery)
+    val currentSearchType = rememberUpdatedState(searchType)
+    val currentSearchPlatform = rememberUpdatedState(searchPlatform)
+    val currentOnSearch = rememberUpdatedState(onSearch)
+    val currentOnSearchPlaylist = rememberUpdatedState(onSearchPlaylist)
+    val currentOnSearchQueryChange = rememberUpdatedState(onSearchQueryChange)
+    val textColorArgb = LXTextPrimary.toArgb()
+    val hintColorArgb = LXTextSecondary.toArgb()
+
+    // 2.9 进入软键盘编辑模式（参考 cat3399/blbl：开启输入法响应、显示光标并显式拉起系统软键盘）
+    fun enterImeEditMode(editText: EditText) {
+        editText.showSoftInputOnFocus = true
+        editText.isCursorVisible = true
+        if (!editText.isFocused) {
+            editText.requestFocus()
+        }
+        val imm = editText.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.showSoftInput(editText, InputMethodManager.SHOW_FORCED)
+    }
+
+    // 2.9 退出软键盘编辑模式（恢复 D-Pad 导航态：禁用获焦弹窗、隐藏光标并收起软键盘）
+    fun exitImeEditMode(editText: EditText) {
+        editText.showSoftInputOnFocus = false
+        editText.isCursorVisible = false
+        val imm = editText.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(editText.windowToken, 0)
+    }
+
     // 2.8 服务器启动完成（serverUrl 变为非空）→ 自动弹出二维码
     LaunchedEffect(serverUrl) {
         if (serverUrl != null && pendingQrAfterServerStart) {
@@ -207,13 +253,13 @@ fun SearchScreen(
                         // focusGroup：跨列导航按「键盘 → 联想 → 热门」整组跳转，
                         // 避免焦点搜索跳过中间联想列直达右侧热门
                         .focusGroup()
-                        // 显式拦截右键：仅当焦点在键盘「右边缘」键（每行最右列/搜索键）时
+                        // 显式拦截右键：仅当焦点在键盘「右边缘」键（每行最右列/搜索键）、类型选择器最右键或搜索行二维码按钮时
                         // 才强制跳联想列；键盘内部的左右导航（如 A→B）仍交给焦点系统，
                         // 避免整个键盘只能选中最左一列
                         .onPreviewKeyEvent { event ->
                             if (event.type == KeyEventType.KeyDown &&
                                 event.key == Key.DirectionRight &&
-                                (keyboardAtRightEdge || typeAtRightEdge)
+                                (keyboardAtRightEdge || typeAtRightEdge || qrBtnFocused)
                             ) {
                                 // 中间列有内容（输入空且有历史 / 输入非空且有联想）→ 进中间列首项；
                                 // 中间列为空 → 直接跳右侧热门首项（避免焦点落在不可见占位，需再按一次）
@@ -233,10 +279,12 @@ fun SearchScreen(
                 ) {
                     // 2.6 移除「搜索音乐/搜索歌单」标题
 
-                    // 搜索词展示框（纯展示，不可聚焦）：
-                    // 输入全部由下方小键盘驱动，不放在 TextField 里——聚焦的 TextField 会建立
-                    // IME 连接，遥控器返回键会被系统输入法逻辑在 Compose 之前吞掉，导致无法退出搜索页
-                    // 2.8 输入框缩窄（weight 0.7）+ 右侧二维码推送按钮（扫码用手机推文字到输入框）
+                    // 2.9 搜索词输入/展示框：参考 cat3399/blbl 成熟 TV 输入框双模交互架构
+                    // 默认导航态：showSoftInputOnFocus = false，遥控器 D-Pad 获焦 100% 满铺高亮且绝不自动弹出软键盘；
+                    // 唤起编辑态：按确定键（DPAD_CENTER / ENTER）或点击后，调起系统软键盘输入中文；
+                    // 实时上屏：addTextChangedListener 实时同步到 searchQuery 与联想词列表；
+                    // 动作直通：软键盘“搜索/确定”（IME_ACTION_SEARCH）直接触发搜索并收起键盘；
+                    // 焦点移出：自动退出编辑态并隐藏软键盘
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -245,37 +293,129 @@ fun SearchScreen(
                         Box(
                             modifier = Modifier
                                 .weight(0.7f)
+                                .height(58.dp)
                                 .clip(RoundedCornerShape(12.dp))
-                                // 2.5 浅色主题：白底 + 浅边框
-                                .background(LXSurfaceCard)
-                                .border(2.dp, LXBorder, RoundedCornerShape(12.dp))
-                                .padding(horizontal = 16.dp, vertical = 18.dp)
+                                .background(
+                                    if (searchBoxFocused) LXPrimary.copy(alpha = 0.35f) else LXSurfaceVariant
+                                )
+                                .border(
+                                    width = if (searchBoxFocused) 3.dp else 0.dp,
+                                    color = if (searchBoxFocused) FocusBorder else Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .padding(horizontal = 16.dp),
+                            contentAlignment = Alignment.CenterStart
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxSize()
+                            ) {
                                 Icon(
                                     imageVector = Icons.Default.Search,
                                     contentDescription = "搜索",
-                                    tint = LXTextSecondary,
+                                    tint = if (searchBoxFocused) Color.White else LXTextPrimary,
                                     modifier = Modifier.size(20.dp)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
-                                Text(
-                                    text = searchQuery.ifBlank {
-                                        // 2.8 文案缩短：输入框缩窄后原文案放不下（Ellipsis 截断）
-                                        if (searchType == SearchType.PLAYLIST) "输入歌单关键词" else "输入歌曲名/歌手"
+                                AndroidView<EditText>(
+                                    factory = { ctx ->
+                                        EditText(ctx).apply {
+                                            background = null
+                                            setPadding(0, 0, 0, 0)
+                                            isSingleLine = true
+                                            maxLines = 1
+                                            gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                                            includeFontPadding = false
+                                            textSize = 16f
+                                            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                                            imeOptions = EditorInfo.IME_ACTION_SEARCH or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                                            
+                                            // 1. 默认 D-Pad 导航态：获焦绝不弹出软键盘
+                                            showSoftInputOnFocus = false
+                                            isCursorVisible = false
+
+                                            // 2. 遥控器确定键（OK / ENTER）唤起系统输入法
+                                            setOnKeyListener { v, keyCode, event ->
+                                                if (event.action == AndroidKeyEvent.ACTION_DOWN) {
+                                                    if (keyCode == AndroidKeyEvent.KEYCODE_DPAD_CENTER || keyCode == AndroidKeyEvent.KEYCODE_ENTER) {
+                                                        enterImeEditMode(this)
+                                                        return@setOnKeyListener true
+                                                    }
+                                                }
+                                                false
+                                            }
+
+                                            // 3. 点击唤起系统输入法
+                                            setOnClickListener {
+                                                enterImeEditMode(this)
+                                            }
+
+                                            // 4. 失去焦点自动退出编辑态并隐藏软键盘
+                                            setOnFocusChangeListener { v, hasFocus ->
+                                                searchBoxFocused = hasFocus
+                                                if (!hasFocus) {
+                                                    exitImeEditMode(this)
+                                                }
+                                            }
+
+                                            // 5. 系统输入法“搜索/确定”按键直通执行搜索
+                                            setOnEditorActionListener { v, actionId, event ->
+                                                if (actionId == EditorInfo.IME_ACTION_SEARCH ||
+                                                    actionId == EditorInfo.IME_ACTION_DONE ||
+                                                    actionId == EditorInfo.IME_ACTION_GO ||
+                                                    actionId == EditorInfo.IME_ACTION_SEND ||
+                                                    (event != null && event.keyCode == AndroidKeyEvent.KEYCODE_ENTER && event.action == AndroidKeyEvent.ACTION_DOWN)
+                                                ) {
+                                                    val currentText = text?.toString().orEmpty()
+                                                    if (currentText.isNotBlank()) {
+                                                        if (currentSearchType.value == SearchType.PLAYLIST) {
+                                                            currentOnSearchPlaylist.value(currentText, currentSearchPlatform.value)
+                                                        } else {
+                                                            currentOnSearch.value(currentText, currentSearchPlatform.value)
+                                                        }
+                                                    }
+                                                    exitImeEditMode(this)
+                                                    true
+                                                } else {
+                                                    false
+                                                }
+                                            }
+
+                                            // 6. 软键盘打字实时同步上屏到 ViewModel
+                                            addTextChangedListener { editable ->
+                                                val newText = editable?.toString().orEmpty()
+                                                if (newText != currentSearchQuery.value) {
+                                                    currentOnSearchQueryChange.value(newText)
+                                                }
+                                            }
+                                        }
                                     },
-                                    fontSize = 16.sp,
-                                    // 2.5 浅色主题：浅色背景上深色文字，空白用次文字提示
-                                    color = if (searchQuery.isBlank()) LXTextSecondary else LXTextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    update = { editText ->
+                                        val hintText = if (searchType == SearchType.PLAYLIST) "输入歌单关键词" else "输入歌曲名/歌手"
+                                        if (editText.hint != hintText) {
+                                            editText.hint = hintText
+                                        }
+                                        val textColor = if (searchBoxFocused) android.graphics.Color.WHITE else textColorArgb
+                                        editText.setTextColor(textColor)
+                                        val hintColor = if (searchBoxFocused) 0xB3FFFFFF.toInt() else hintColorArgb
+                                        editText.setHintTextColor(hintColor)
+
+                                        val textInView = editText.text?.toString().orEmpty()
+                                        if (textInView != searchQuery) {
+                                            editText.setText(searchQuery)
+                                            editText.setSelection(searchQuery.length)
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .then(if (contentEnterRequester != null) Modifier.focusRequester(contentEnterRequester) else Modifier)
                                 )
                             }
                         }
                         // 二维码推送按钮：扫码打开 /search 页，手机输入文字推送到输入框（解决 TV 输入困难）。
                         // 2.8 样式与小键盘按键完全一致：未聚焦灰底无边框，聚焦红底 0.35 + 3dp 焦点边框；
                         // 未开启服务器时询问是否启用
-                        var qrBtnFocused by remember { mutableStateOf(false) }
                         Box(
                             modifier = Modifier
                                 .size(58.dp)
@@ -366,8 +506,6 @@ fun SearchScreen(
                             onTypeSelected = onSearchTypeChange,
                             // 跟踪类型选择器是否停在最右按钮（歌单），用于右键跨列路由到联想列
                             onFocusAtRightEdgeChange = { typeAtRightEdge = it },
-                            // 导航栏右键进入搜索页时，焦点落到类型选择器首项（歌曲）
-                            extraFocusRequester = contentEnterRequester,
                             modifier = Modifier.weight(1f)
                         )
                     }
