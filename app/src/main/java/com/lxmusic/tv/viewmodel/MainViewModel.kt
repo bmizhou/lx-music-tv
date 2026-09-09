@@ -196,8 +196,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _duration = MutableStateFlow(0L)
     val duration: StateFlow<Long> = _duration.asStateFlow()
 
-    // 偏好音质（设置页播放设置，SharedPreferences 持久化，默认 320k）
-    private val _preferredQuality = MutableStateFlow(AudioQuality.QUALITY_320K)
+    // 偏好音质（设置页播放设置，SharedPreferences 持久化，2.9 默认 FLAC 无损）
+    private val _preferredQuality = MutableStateFlow(AudioQuality.FLAC)
     val preferredQuality: StateFlow<AudioQuality> = _preferredQuality.asStateFlow()
 
     private val _playlist = MutableStateFlow<List<Song>>(emptyList())
@@ -883,11 +883,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun loadPreferredQuality(): AudioQuality {
         return try {
+            // 2.9 默认音质升级为 FLAC：未配置时回退 FLAC，而非旧的 320k
             val name = app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
-                .getString("preferred_quality", AudioQuality.QUALITY_320K.name) ?: AudioQuality.QUALITY_320K.name
+                .getString("preferred_quality", AudioQuality.FLAC.name) ?: AudioQuality.FLAC.name
             AudioQuality.valueOf(name)
         } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
-            AudioQuality.QUALITY_320K
+            AudioQuality.FLAC
         }
     }
 

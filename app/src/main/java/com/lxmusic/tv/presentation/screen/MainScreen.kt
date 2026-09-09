@@ -112,7 +112,7 @@ fun MainScreen(
     onPlayPause: () -> Unit = {},
     defaultPlatform: MusicPlatform = MusicPlatform.KW,
     onDefaultPlatformChange: (MusicPlatform) -> Unit = {},
-    preferredQuality: AudioQuality = AudioQuality.QUALITY_320K,
+    preferredQuality: AudioQuality = AudioQuality.FLAC,
     onPreferredQualityChange: (AudioQuality) -> Unit = {},
     // 2.8 歌词设置：是否显示翻译歌词
     lyricTranslationEnabled: Boolean = true,
@@ -388,8 +388,8 @@ fun NavigationSidebar(
         NavItem("歌单", Icons.Default.LibraryMusic, "歌单广场"),
         NavItem("排行", Icons.Default.Leaderboard, "音乐排行榜"),
         NavItem("收藏", Icons.Default.Favorite, "我的收藏"),
-        // 2.9 本地：展示已完整缓存的离线歌曲（断网可直接播放）
-        NavItem("本地", Icons.Default.SdCard, "本地缓存歌曲"),
+        // 2.9 本地：展示已完整缓存的离线歌曲（断网可直接播放）；图标与 lx-music-android 同款（Folder）
+        NavItem("本地", Icons.Default.Folder, "本地缓存歌曲"),
         NavItem("设置", Icons.Default.Settings, "应用设置")
     )
 
@@ -783,7 +783,7 @@ fun MainContent(
     onEnableServer: () -> Unit = {},
     defaultPlatform: MusicPlatform = MusicPlatform.KW,
     onDefaultPlatformChange: (MusicPlatform) -> Unit = {},
-    preferredQuality: AudioQuality = AudioQuality.QUALITY_320K,
+    preferredQuality: AudioQuality = AudioQuality.FLAC,
     onPreferredQualityChange: (AudioQuality) -> Unit = {},
     // 2.8 歌词设置：是否显示翻译歌词
     lyricTranslationEnabled: Boolean = true,
@@ -1873,7 +1873,7 @@ fun SettingsScreen(
     onNavigateToCacheManage: () -> Unit = {},
     defaultPlatform: MusicPlatform = MusicPlatform.KW,
     onDefaultPlatformChange: (MusicPlatform) -> Unit = {},
-    preferredQuality: AudioQuality = AudioQuality.QUALITY_320K,
+    preferredQuality: AudioQuality = AudioQuality.FLAC,
     onPreferredQualityChange: (AudioQuality) -> Unit = {},
     // 2.8 歌词设置：是否显示翻译歌词
     lyricTranslationEnabled: Boolean = true,
