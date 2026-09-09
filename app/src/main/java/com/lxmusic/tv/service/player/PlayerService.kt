@@ -42,6 +42,16 @@ class PlayerService : Service() {
         private const val TAG = "PlayerService"
         private const val CHANNEL_ID = "lx_music_playback"
         private const val NOTIFICATION_ID = 1001
+
+        /**
+         * 2.9 当前正在播放/写入的音频缓存 key（全局活跃 key）。
+         * 缓存清理逻辑（CacheManager.cleanupIncompleteCache / cleanupOtherQualityCaches /
+         * getCachedSongs 聚合淘汰）遇到该 key 必须强制跳过——否则会把正在边播边写的缓存物理删除，
+         * 触发 CacheDataSource FLAG_IGNORE_CACHE_ON_ERROR 导致后续歌曲全部失去缓存能力。
+         */
+        @Volatile
+        @JvmStatic
+        var activePlayingCacheKey: String? = null
     }
 
     private var exoPlayer: ExoPlayer? = null
@@ -411,7 +421,14 @@ class PlayerService : Service() {
             currentSongCompleted = false
             // 2.7 设置音频缓存 key（歌曲维度）：URL 变化也能命中本地缓存
             currentCacheKey = musicInfo.cacheKey
-            val mediaItem = MediaItem.fromUri(musicInfo.url)
+            // 2.9 全局活跃 key：供缓存清理逻辑免死保护（禁止删除正在写入的分片）
+            activePlayingCacheKey = musicInfo.cacheKey
+            // 2.9 显式绑定 MediaItem 的 customCacheKey：与管道 DataSpec 强绑定，
+            // 杜绝切歌时序交叉污染（后台清理/聚合淘汰误伤新歌缓存）
+            val mediaItem = MediaItem.Builder()
+                .setUri(musicInfo.url)
+                .setCustomCacheKey(musicInfo.cacheKey)
+                .build()
             exoPlayer?.apply {
                 setMediaItem(mediaItem)
                 prepare()
@@ -516,6 +533,9 @@ class PlayerService : Service() {
         }
         currentSongCompleted = false
         currentCacheKey = null
+        // 2.9 停止后不再有「正在写入」的缓存：解除活跃 key 免死保护，
+        // 后续清理/聚合淘汰可正常回收该歌曲的陈旧分片
+        activePlayingCacheKey = null
     }
 
     /**

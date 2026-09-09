@@ -2,12 +2,14 @@ package com.lxmusic.tv.data.cache
 
 import android.content.Context
 import com.google.android.exoplayer2.database.StandaloneDatabaseProvider
+import com.google.android.exoplayer2.upstream.cache.ContentMetadata
 import com.google.android.exoplayer2.upstream.cache.LeastRecentlyUsedCacheEvictor
 import com.google.android.exoplayer2.upstream.cache.SimpleCache
 import com.lxmusic.tv.data.database.CacheItemEntity
 import com.lxmusic.tv.data.database.LxMusicDatabase
 import com.lxmusic.tv.data.model.AudioQuality
 import com.lxmusic.tv.data.model.Song
+import com.lxmusic.tv.service.player.PlayerService
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.security.MessageDigest
@@ -138,7 +140,7 @@ object CacheManager {
     // 重新播一半切走时不清理半截缓存（违背 v202/v203 清理逻辑）。
 
     /** 清空全部完整缓存标记（clearAudio/clearAll 后调用：音频缓存整体删除，所有标记失效） */
-    private fun clearCompletedMarks() {
+    fun clearCompletedMarks() {
         try {
             appContext?.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
                 ?.edit()
@@ -149,7 +151,7 @@ object CacheManager {
     }
 
     /** 移除指定缓存 key 的完整标记（clearUnfavoritedAudio 删除部分歌曲缓存后调用） */
-    private fun clearCompletedMarks(keys: Set<String>) {
+    fun clearCompletedMarks(keys: Set<String>) {
         if (keys.isEmpty()) return
         try {
             val prefs = appContext?.getSharedPreferences("lx_settings", Context.MODE_PRIVATE) ?: return
@@ -273,13 +275,265 @@ object CacheManager {
         }
     }
 
-    /** 本地 SimpleCache 是否已有该歌曲 key 的音频缓存分片（true=可离线播放，URL 过期也无妨） */
+    /**
+     * 本地 SimpleCache 是否已有该歌曲 key 的有效音频缓存分片（true=可离线播放，URL 过期也无妨）
+     *
+     * ⚠️ 2.9 离线治本修复：原实现为 `cache.isCached(key, 0, Long.MAX_VALUE)`，
+     * 由于没有任何音频文件能达到 Long.MAX_VALUE 长度，该判定**永远返回 false**，
+     * 导致「URL 缓存过期（>2h）后即便本地完整缓存仍在盘上也判定为无缓存」→ 必须联网重新解析 URL 才能播放，
+     * 这正是「离线几天后缓存歌曲无法播放、必须联网重载一次 URL」的根本原因。
+     * 现改为「完整缓存判定 + 有效分片体积检查」。
+     */
     fun hasAudioCache(key: String): Boolean {
         if (key.isBlank()) return false
         return try {
-            getAudioCache(requireContext()).isCached(key, 0, Long.MAX_VALUE)
+            val ctx = requireContext()
+            if (isFullyCached(ctx, key)) {
+                return true
+            }
+            val spans = getAudioCache(ctx).getCachedSpans(key)
+            spans != null && spans.isNotEmpty() && spans.sumOf { it.length } >= 200 * 1024L
         } catch (e: Exception) {
             false
+        }
+    }
+
+    // ========== 2.9 完整缓存判定（离线可播性核心） ==========
+
+    /** 检查指定缓存 key 是否已标记为完整缓存（播放器完整听完 STATE_ENDED 写入） */
+    fun isCacheCompleted(context: Context, key: String): Boolean {
+        return try {
+            context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
+                .getStringSet("music_cache_completed", emptySet())?.contains(key) ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 记录指定缓存 key 为完整缓存（已包含则跳过，消除高频冗余写盘） */
+    fun markCacheCompleted(context: Context, key: String?) {
+        if (key.isNullOrBlank()) return
+        try {
+            val prefs = context.getSharedPreferences("lx_settings", Context.MODE_PRIVATE)
+            val set = (prefs.getStringSet("music_cache_completed", emptySet()) ?: emptySet()).toMutableSet()
+            if (set.contains(key)) return
+            if (set.size >= 500) set.clear()
+            set.add(key)
+            prefs.edit().putStringSet("music_cache_completed", set).apply()
+        } catch (e: Exception) {
+        }
+    }
+
+    /**
+     * 严格检查指定 key 是否已 100% 完整缓存（整首歌曲已在本地磁盘）
+     * 判定条件：
+     * 1. 标记检查（核心优先）：已被 markCacheCompleted 标记（播放完毕 STATE_ENDED），且本地有效分片 >= 200KB；
+     * 2. 物理检查：Content-Length > 0 且已缓存满（或容差：差额 <= 64KB 且覆盖率 >= 98%），判定完整并补标记；
+     * 3. 自动识别：分块传输（无 Content-Length）且从 0 字节起缓冲至音质基准体积，自动补全标记。
+     */
+    fun isFullyCached(context: Context, key: String): Boolean {
+        if (key.isBlank()) return false
+        return try {
+            val cache = getAudioCache(context)
+            val spans = try { cache.getCachedSpans(key) } catch (_: Exception) { null }
+            val bytes = spans?.sumOf { it.length } ?: 0L
+            // 物理过滤：无分片或总字节数不足 200KB 绝非完整单曲
+            if (bytes < 200 * 1024L) return false
+
+            // 准则 1：明确已完整播放标记（STATE_ENDED 听完全曲），最权威凭据
+            if (isCacheCompleted(context, key)) {
+                return true
+            }
+
+            // 准则 2：Content-Length 存在时的物理检查（含末尾 Padding/ID3v1 容差自愈）
+            val metadata = try { cache.getContentMetadata(key) } catch (_: Exception) { null }
+            val contentLength = if (metadata != null) ContentMetadata.getContentLength(metadata) else -1L
+            if (contentLength > 0L) {
+                if (cache.isCached(key, 0, contentLength)) {
+                    markCacheCompleted(context, key)
+                    return true
+                }
+                val diff = contentLength - bytes
+                if (diff <= 64 * 1024L && (bytes.toDouble() / contentLength) >= 0.98) {
+                    markCacheCompleted(context, key)
+                    return true
+                }
+                return false
+            }
+
+            // 准则 3：分块传输自动识别（必须从 0 字节起 + 达到音质基准体积）
+            if (spans != null && spans.isNotEmpty()) {
+                val hasStart = spans.any { it.position == 0L }
+                if (hasStart) {
+                    val q = parseCacheKey(key)?.quality
+                    val minBytes = when (q) {
+                        AudioQuality.FLAC_24BIT.name -> 12 * 1024 * 1024L
+                        AudioQuality.FLAC.name -> 7 * 1024 * 1024L
+                        AudioQuality.QUALITY_320K.name -> 4 * 1024 * 1024L
+                        AudioQuality.QUALITY_128K.name -> 1500 * 1024L
+                        else -> 3 * 1024 * 1024L
+                    }
+                    if (bytes >= minBytes) {
+                        markCacheCompleted(context, key)
+                        return true
+                    }
+                }
+            }
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 清理未完成的半截残缺碎片（应用启动时空闲期调用）
+     * ⚠️ 必须跳过当前正在播放/写入的活跃 key，否则会把正在边播边写的缓存物理删除，
+     * 触发 CacheDataSource FLAG_IGNORE_CACHE_ON_ERROR 导致后续全部歌曲失去缓存能力。
+     */
+    fun cleanupIncompleteCache(context: Context) {
+        try {
+            val cache = getAudioCache(context)
+            val keys = try { cache.keys.toSet() } catch (_: Exception) { emptySet() }
+            val removedKeys = mutableSetOf<String>()
+            val activeKey = PlayerService.activePlayingCacheKey
+            for (key in keys) {
+                if (!activeKey.isNullOrBlank() && key == activeKey) continue
+                val spans = try { cache.getCachedSpans(key) } catch (_: Exception) { null }
+                val bytes = spans?.sumOf { it.length } ?: 0L
+                if (bytes <= 0L) {
+                    try {
+                        cache.removeResource(key)
+                        removeUrl(key)
+                    } catch (_: Exception) {}
+                    continue
+                }
+                if (!isFullyCached(context, key)) {
+                    try {
+                        cache.removeResource(key)
+                        removeUrl(key)
+                        removedKeys.add(key)
+                    } catch (_: Exception) {}
+                }
+            }
+            if (removedKeys.isNotEmpty()) {
+                clearCompletedMarks(removedKeys)
+                android.util.Log.i("CacheManager", "已自动清理 ${removedKeys.size} 个异常退出残留的未完成缓存碎片")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("CacheManager", "清理未完成缓存碎片失败", e)
+        }
+    }
+
+    /**
+     * 检查歌曲在本地是否已有任意音质的 100% 完整缓存。
+     * 严格高品质优先：FLAC_24BIT > FLAC > 320K > 128K；命中即返回该音质（供播放层直接用缓存音质播放）。
+     */
+    fun findCachedQuality(context: Context, song: Song): AudioQuality? {
+        val qualities = listOf(
+            AudioQuality.FLAC_24BIT,
+            AudioQuality.FLAC,
+            AudioQuality.QUALITY_320K,
+            AudioQuality.QUALITY_128K
+        )
+        for (q in qualities) {
+            val key = songCacheKey(song, q)
+            if (isFullyCached(context, key)) {
+                val spans = try { getAudioCache(context).getCachedSpans(key) } catch (_: Exception) { null }
+                val bytes = spans?.sumOf { it.length } ?: 0L
+                if (bytes > 0) {
+                    val finalQuality = calibrateQuality(q, bytes)
+                    cleanupOtherQualityCaches(context, song, q)
+                    saveActualQuality(song.platform.key, song.id, finalQuality)
+                    return finalQuality
+                }
+            }
+        }
+        val actual = getActualQuality(context, song.platform.key, song.id)
+        if (actual != null && isFullyCached(context, songCacheKey(song, actual))) {
+            return actual
+        }
+        return null
+    }
+
+    /** 清理同一歌曲名下除保留音质外的其他历史/陈旧缓存分片（跳过活跃播放 key） */
+    fun cleanupOtherQualityCaches(context: Context, song: Song, keepQuality: AudioQuality) {
+        try {
+            val cache = getAudioCache(context)
+            val allKeys = try { cache.keys.toSet() } catch (_: Exception) { emptySet() }
+            val keepKey = songCacheKey(song, keepQuality)
+            val prefix = "${song.platform.key}|${song.id}|"
+            val toRemove = mutableSetOf<String>()
+            val activeKey = PlayerService.activePlayingCacheKey
+            for (k in allKeys) {
+                if (k.startsWith(prefix) && k != keepKey) {
+                    if (!activeKey.isNullOrBlank() && k == activeKey) continue
+                    toRemove.add(k)
+                }
+            }
+            for (k in toRemove) {
+                try { cache.removeResource(k) } catch (_: Exception) {}
+                removeUrl(k)
+            }
+            if (toRemove.isNotEmpty()) {
+                clearCompletedMarks(toRemove)
+            }
+        } catch (_: Exception) {}
+    }
+
+    /** 记录歌曲的实际音频音质（PlayerService 解码探测到真实格式后写入） */
+    fun saveActualQuality(platformKey: String, musicId: String, quality: AudioQuality) {
+        try {
+            val ctx = appContext ?: return
+            val prefs = ctx.getSharedPreferences("lx_song_qualities", Context.MODE_PRIVATE)
+            prefs.edit().putString("${platformKey}|${musicId}", quality.name).apply()
+        } catch (e: Exception) {
+        }
+    }
+
+    /** 获取歌曲已记录的实际音质 */
+    fun getActualQuality(context: Context, platformKey: String, musicId: String): AudioQuality? {
+        return try {
+            val prefs = context.getSharedPreferences("lx_song_qualities", Context.MODE_PRIVATE)
+            val name = prefs.getString("${platformKey}|${musicId}", null) ?: return null
+            runCatching { AudioQuality.valueOf(name) }.getOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 物理体积与码率自愈校准：纠正音源降级（请求 Hi-Res 实际返回 320k）导致的音质虚标
+     */
+    fun calibrateQuality(candidateQuality: AudioQuality?, bytes: Long): AudioQuality {
+        val mb = bytes / (1024.0 * 1024.0)
+        return when (candidateQuality) {
+            AudioQuality.FLAC_24BIT -> when {
+                mb >= 30.0 -> AudioQuality.FLAC_24BIT
+                mb >= 12.0 -> AudioQuality.FLAC
+                mb >= 5.5 -> AudioQuality.QUALITY_320K
+                else -> AudioQuality.QUALITY_128K
+            }
+            AudioQuality.FLAC -> when {
+                mb >= 10.0 -> AudioQuality.FLAC
+                mb >= 5.5 -> AudioQuality.QUALITY_320K
+                else -> AudioQuality.QUALITY_128K
+            }
+            AudioQuality.QUALITY_320K -> when {
+                mb >= 4.5 -> AudioQuality.QUALITY_320K
+                else -> AudioQuality.QUALITY_128K
+            }
+            AudioQuality.QUALITY_128K -> when {
+                mb >= 35.0 -> AudioQuality.FLAC_24BIT
+                mb >= 12.0 -> AudioQuality.FLAC
+                mb >= 5.5 -> AudioQuality.QUALITY_320K
+                else -> AudioQuality.QUALITY_128K
+            }
+            null -> when {
+                mb >= 35.0 -> AudioQuality.FLAC_24BIT
+                mb >= 12.0 -> AudioQuality.FLAC
+                mb >= 5.5 -> AudioQuality.QUALITY_320K
+                else -> AudioQuality.QUALITY_128K
+            }
         }
     }
 
@@ -342,5 +596,207 @@ object CacheManager {
         clearAudio(context)
         clearLyric(context)
         clearCover(context)
+    }
+
+    // ==================== 2.9 单曲缓存扫描与管理（本地 Tab 用） ====================
+
+    /** 已缓存歌曲条目信息 */
+    data class CachedSongItem(
+        val cacheKey: String,
+        val musicId: String,
+        val platformKey: String,
+        val quality: String,
+        val sizeBytes: Long,
+        val name: String,
+        val singer: String,
+        val picUrl: String? = null
+    )
+
+    /**
+     * 解析缓存 key（结构：platformKey|musicId|quality）
+     * musicId 可能含特殊字符，取首/尾分隔符精确切分
+     */
+    data class ParsedCacheKey(
+        val platformKey: String,
+        val musicId: String,
+        val quality: String
+    )
+
+    fun parseCacheKey(key: String): ParsedCacheKey? {
+        if (key.isBlank()) return null
+        val firstPipe = key.indexOf('|')
+        if (firstPipe <= 0) return null
+        val lastPipe = key.lastIndexOf('|')
+        if (lastPipe <= firstPipe) {
+            return ParsedCacheKey(key.substring(0, firstPipe), key.substring(firstPipe + 1), "")
+        }
+        return ParsedCacheKey(
+            key.substring(0, firstPipe),
+            key.substring(firstPipe + 1, lastPipe),
+            key.substring(lastPipe + 1)
+        )
+    }
+
+    /** 记录歌曲元数据（供本地列表按 cacheKey 逆向还原歌名/歌手/封面） */
+    fun saveSongMeta(song: Song) {
+        try {
+            val ctx = appContext ?: return
+            val prefs = ctx.getSharedPreferences("lx_song_metas", Context.MODE_PRIVATE)
+            val meta = "${song.name}\t${song.singer}\t${song.picUrl ?: ""}"
+            prefs.edit().putString("${song.platform.key}|${song.id}", meta).apply()
+        } catch (e: Exception) {
+        }
+    }
+
+    /**
+     * 获取所有已完整缓存的歌曲列表（含占用大小与歌曲信息，按体积降序）
+     * 严格过滤：仅返回 100% 完整缓存的歌曲；未完成残片仅跳过，绝不在此物理删除
+     * （避免误删后台正在缓冲/播放的音频数据）
+     */
+    suspend fun getCachedSongs(context: Context): List<CachedSongItem> {
+        val distinctMap = mutableMapOf<String, CachedSongItem>()
+        try {
+            val cache = getAudioCache(context)
+            val keys = try { cache.keys.toSet() } catch (e: Exception) { emptySet() }
+            val prefs = context.getSharedPreferences("lx_song_metas", Context.MODE_PRIVATE)
+            val db = LxMusicDatabase.getDatabase(context)
+
+            for (key in keys) {
+                val parsed = parseCacheKey(key) ?: continue
+                val platformKey = parsed.platformKey
+                val musicId = parsed.musicId
+                val quality = parsed.quality
+
+                val spans = try { cache.getCachedSpans(key) } catch (e: Exception) { null }
+                val bytes = spans?.sumOf { it.length } ?: 0L
+                if (bytes <= 0L) continue
+                if (!isFullyCached(context, key)) continue
+
+                var songName: String? = null
+                var singer: String? = null
+                var picUrl: String? = null
+
+                val cachedMeta = prefs.getString("${platformKey}|${musicId}", null)
+                if (!cachedMeta.isNullOrBlank()) {
+                    val metaParts = cachedMeta.split("\t")
+                    if (metaParts.isNotEmpty()) songName = metaParts[0]
+                    if (metaParts.size >= 2) singer = metaParts[1]
+                    if (metaParts.size >= 3 && metaParts[2].isNotBlank()) picUrl = metaParts[2]
+                }
+                if (songName == null) {
+                    val fav = db.favoriteDao().getFavoriteByMusicId(musicId)
+                    if (fav != null) {
+                        songName = fav.musicName
+                        singer = fav.artist
+                        picUrl = fav.picUrl
+                    }
+                }
+                if (songName == null) {
+                    val history = db.playHistoryDao().getPlayHistoryByMusicId(musicId)
+                    if (history != null) {
+                        songName = history.musicName
+                        singer = history.artist
+                    }
+                }
+                if (songName == null) {
+                    val item = db.musicItemDao().getMusicItemById(musicId)
+                    if (item != null) {
+                        songName = item.name
+                        singer = item.artist
+                        picUrl = item.picUrl
+                    }
+                }
+
+                val finalName = if (!songName.isNullOrBlank()) songName else "未知歌曲 ($musicId)"
+                val finalSinger = if (!singer.isNullOrBlank()) singer else platformKey.uppercase()
+                val savedActualQuality = getActualQuality(context, platformKey, musicId)
+                val rawCandidateQuality = runCatching { AudioQuality.valueOf(quality) }.getOrNull()
+                val calibratedQuality = calibrateQuality(savedActualQuality ?: rawCandidateQuality, bytes)
+
+                val item = CachedSongItem(
+                    cacheKey = key,
+                    musicId = musicId,
+                    platformKey = platformKey,
+                    quality = calibratedQuality.name,
+                    sizeBytes = bytes,
+                    name = finalName,
+                    singer = finalSinger,
+                    picUrl = picUrl
+                )
+
+                // 聚合去重：同歌曲保留体积最大（最高音质）版本，安全淘汰被替代的陈旧版本
+                val songKey = "${platformKey}|${musicId}"
+                val existing = distinctMap[songKey]
+                val activeKey = PlayerService.activePlayingCacheKey
+                if (existing == null) {
+                    distinctMap[songKey] = item
+                } else if (item.sizeBytes > existing.sizeBytes) {
+                    if (existing.cacheKey != activeKey) {
+                        try { cache.removeResource(existing.cacheKey) } catch (_: Exception) {}
+                        removeUrl(existing.cacheKey)
+                        clearCompletedMarks(setOf(existing.cacheKey))
+                    }
+                    distinctMap[songKey] = item
+                } else {
+                    if (key != activeKey) {
+                        try { cache.removeResource(key) } catch (_: Exception) {}
+                        removeUrl(key)
+                        clearCompletedMarks(setOf(key))
+                    }
+                }
+            }
+            return distinctMap.values.sortedByDescending { it.sizeBytes }
+        } catch (e: Exception) {
+            android.util.Log.e("CacheManager", "扫描已缓存歌曲失败", e)
+        }
+        return emptyList()
+    }
+
+    /** 精准删除单首歌曲的音频缓存及相关记录（含同一首歌的所有音质版本） */
+    fun removeCachedSong(context: Context, cacheKey: String) {
+        try {
+            val parsed = parseCacheKey(cacheKey)
+            val cache = getAudioCache(context)
+            val allKeys = try { cache.keys.toSet() } catch (_: Exception) { emptySet() }
+            val targetKeys = mutableSetOf<String>()
+            targetKeys.add(cacheKey)
+            if (parsed != null) {
+                for (k in allKeys) {
+                    val p = parseCacheKey(k)
+                    if (p != null && p.platformKey == parsed.platformKey && p.musicId == parsed.musicId) {
+                        targetKeys.add(k)
+                    }
+                }
+            }
+            for (k in targetKeys) {
+                try { cache.removeResource(k) } catch (_: Exception) {}
+                removeUrl(k)
+            }
+            clearCompletedMarks(targetKeys)
+            if (parsed != null) {
+                try {
+                    context.getSharedPreferences("lx_song_qualities", Context.MODE_PRIVATE)
+                        .edit()
+                        .remove("${parsed.platformKey}|${parsed.musicId}")
+                        .apply()
+                } catch (_: Exception) {}
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("CacheManager", "删除歌曲缓存失败: $cacheKey", e)
+        }
+    }
+
+    /** 格式化缓存大小为易读文本（B / KB / MB / GB） */
+    fun formatCacheSize(bytes: Long): String {
+        if (bytes <= 0) return "0 B"
+        val kb = bytes / 1024.0
+        val mb = kb / 1024.0
+        val gb = mb / 1024.0
+        return when {
+            gb >= 1.0 -> String.format(java.util.Locale.CHINA, "%.2f GB", gb)
+            mb >= 1.0 -> String.format(java.util.Locale.CHINA, "%.2f MB", mb)
+            kb >= 1.0 -> String.format(java.util.Locale.CHINA, "%.1f KB", kb)
+            else -> "$bytes B"
+        }
     }
 }

@@ -147,6 +147,14 @@ fun MainScreen(
     onTogglePlaylistFavorite: (com.lxmusic.tv.data.model.Playlist) -> Unit = {},
     onOpenFavoritePlaylist: (com.lxmusic.tv.data.model.FavoritePlaylist) -> Unit = {},
     onBackFromFavoritePlaylistSongs: () -> Unit = {},
+    // ===== 2.9 本地缓存歌曲（侧栏「本地」Tab）=====
+    cachedSongs: List<com.lxmusic.tv.data.cache.CacheManager.CachedSongItem> = emptyList(),
+    cachedSongsLoading: Boolean = false,
+    onPlayCachedSong: (com.lxmusic.tv.data.cache.CacheManager.CachedSongItem) -> Unit = {},
+    onDeleteCachedSong: (com.lxmusic.tv.data.cache.CacheManager.CachedSongItem) -> Unit = {},
+    // 2.9 启动默认页面（0搜索/1歌单/2排行/3收藏/4本地/5设置），默认选择歌单(1)
+    defaultStartupTab: Int = 1,
+    onDefaultStartupTabChange: (Int) -> Unit = {},
     // ===== 搜索页（2.6 起内嵌为 tab，保留左侧导航栏，不再跳转独立页面）=====
     searchQuery: String = "",
     searchPlatform: MusicPlatform = MusicPlatform.KW,
@@ -164,8 +172,8 @@ fun MainScreen(
     serverUrl: String? = null,
     // 2.8 HTTP 未开启时点二维码 → 询问是否启用（调用方负责启动服务器）
     onEnableServer: () -> Unit = {},
-    // 当前选中 tab（由外部持有，导航子页面后返回时保持 tab 不重置）
-    selectedTab: Int = 0,
+    // 当前选中 tab（由外部持有，导航子页面后返回时保持 tab 不重置，默认歌单 1）
+    selectedTab: Int = 1,
     onTabSelected: (Int) -> Unit = {},
     // 重复点击当前 tab 的刷新信号（歌单/排行页监听：重置滚动 + 重新加载）
     tabRefreshTick: Int = 0,
@@ -178,7 +186,8 @@ fun MainScreen(
     // 导航栏每个 tab 各自持有焦点请求器：内容页按左键返回时精确聚焦到「当前选中 tab」，
     // 避免焦点按空间位置乱跳到其它 tab；内容页首个可聚焦项持有 contentEnterRequester，
     // 从导航栏按右键时精确进入内容第一项（而非空间最近项）。
-    val navRequesters = remember { List(5) { FocusRequester() } }
+    // 2.9 共 6 个 tab（0歌单/1排行/2收藏/3本地/4搜索/5设置）
+    val navRequesters = remember { List(6) { FocusRequester() } }
     val contentEnterRequester = remember { FocusRequester() }
     // rememberSaveable：从子路由（播放源管理/界面设置等）返回时 main 重新组合，
     // 若用普通 remember 会重置导致 LaunchedEffect 再次抢焦点到「歌单」tab
@@ -210,9 +219,9 @@ fun MainScreen(
 
     LaunchedEffect(Unit) {
         if (!navInitialFocusRequested) {
-            // 首次进入主页：焦点落在「歌单」tab
+            // 首次进入主页：焦点落在用户设定的默认启动 tab（默认歌单 1）
             requestInitialFocus(
-                focusRequester = navRequesters[0],
+                focusRequester = navRequesters.getOrElse(selectedTab) { navRequesters[1] },
                 attempted = { navInitialFocusRequested },
                 markAttempted = { navInitialFocusRequested = true }
             )
@@ -335,6 +344,14 @@ fun MainScreen(
                 onTogglePlaylistFavorite = onTogglePlaylistFavorite,
                 onOpenFavoritePlaylist = onOpenFavoritePlaylist,
                 onBackFromFavoritePlaylistSongs = onBackFromFavoritePlaylistSongs,
+                // 2.9 本地缓存歌曲
+                cachedSongs = cachedSongs,
+                cachedSongsLoading = cachedSongsLoading,
+                onPlayCachedSong = onPlayCachedSong,
+                onDeleteCachedSong = onDeleteCachedSong,
+                // 2.9 启动默认页面
+                defaultStartupTab = defaultStartupTab,
+                onDefaultStartupTabChange = onDefaultStartupTabChange,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
@@ -366,10 +383,13 @@ fun NavigationSidebar(
     modifier: Modifier = Modifier
 ) {
     val navItems = listOf(
+        // 2.9 搜索跳到 Logo 下方（索引 0）
+        NavItem("搜索", Icons.Default.Search, "搜索音乐"),
         NavItem("歌单", Icons.Default.LibraryMusic, "歌单广场"),
         NavItem("排行", Icons.Default.Leaderboard, "音乐排行榜"),
         NavItem("收藏", Icons.Default.Favorite, "我的收藏"),
-        NavItem("搜索", Icons.Default.Search, "搜索音乐"),
+        // 2.9 本地：展示已完整缓存的离线歌曲（断网可直接播放）
+        NavItem("本地", Icons.Default.SdCard, "本地缓存歌曲"),
         NavItem("设置", Icons.Default.Settings, "应用设置")
     )
 
@@ -798,6 +818,14 @@ fun MainContent(
     onTogglePlaylistFavorite: (com.lxmusic.tv.data.model.Playlist) -> Unit = {},
     onOpenFavoritePlaylist: (com.lxmusic.tv.data.model.FavoritePlaylist) -> Unit = {},
     onBackFromFavoritePlaylistSongs: () -> Unit = {},
+    // ===== 2.9 本地缓存歌曲（侧栏「本地」Tab）=====
+    cachedSongs: List<com.lxmusic.tv.data.cache.CacheManager.CachedSongItem> = emptyList(),
+    cachedSongsLoading: Boolean = false,
+    onPlayCachedSong: (com.lxmusic.tv.data.cache.CacheManager.CachedSongItem) -> Unit = {},
+    onDeleteCachedSong: (com.lxmusic.tv.data.cache.CacheManager.CachedSongItem) -> Unit = {},
+    // 2.9 启动默认页面（0搜索/1歌单/2排行/3收藏/4本地/5设置），默认选择歌单(1)
+    defaultStartupTab: Int = 1,
+    onDefaultStartupTabChange: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -814,7 +842,28 @@ fun MainContent(
                 .background(LXAccentGradientBrush)
         )
         when (selectedTab) {
-            0 -> PlaylistScreen(
+            0 -> SearchScreen(
+                // 2.6 搜索页内嵌为 tab（保留左侧导航栏），不再跳转独立页面；2.9 调整至 Logo 下方（索引 0）
+                searchQuery = searchQuery,
+                searchPlatform = searchPlatform,
+                searchType = searchType,
+                hotKeywords = hotKeywords,
+                suggestions = suggestions,
+                hotSongs = hotSongs,
+                searchHistory = searchHistory,
+                onSearchQueryChange = onSearchQueryChange,
+                onSearch = onSearch,
+                onSearchPlaylist = onSearchPlaylist,
+                onSearchTypeChange = onSearchTypeChange,
+                onClearSearchHistory = onClearSearchHistory,
+                // 2.8 扫码推送弹窗需要服务器地址
+                serverUrl = serverUrl,
+                onEnableServer = onEnableServer,
+                // 导航栏右键进入搜索页 → 聚焦类型选择器首项
+                contentEnterRequester = contentEnterRequester,
+                modifier = Modifier.fillMaxSize()
+            )
+            1 -> PlaylistScreen(
                 platform = defaultPlatform,
                 items = browseItems,
                 songs = browseSongs,
@@ -837,7 +886,7 @@ fun MainContent(
                 onExitToNav = { navRequesters[selectedTab].requestFocus() },
                 modifier = Modifier.fillMaxSize()
             )
-            1 -> RankingScreen(
+            2 -> RankingScreen(
                 platform = defaultPlatform,
                 items = browseItems,
                 songs = browseSongs,
@@ -859,7 +908,7 @@ fun MainContent(
                 onExitToNav = { navRequesters[selectedTab].requestFocus() },
                 modifier = Modifier.fillMaxSize()
             )
-            2 -> FavoritesScreen(
+            3 -> FavoritesScreen(
                 favorites = favorites,
                 favoritePlaylists = favoritePlaylists,
                 favoriteSongIds = favoriteSongIds,
@@ -884,28 +933,18 @@ fun MainContent(
                 onExitToNav = { navRequesters[selectedTab].requestFocus() },
                 modifier = Modifier.fillMaxSize()
             )
-            3 -> SearchScreen(
-                // 2.6 搜索页内嵌为 tab（保留左侧导航栏），不再跳转独立页面
-                searchQuery = searchQuery,
-                searchPlatform = searchPlatform,
-                searchType = searchType,
-                hotKeywords = hotKeywords,
-                suggestions = suggestions,
-                hotSongs = hotSongs,
-                searchHistory = searchHistory,
-                onSearchQueryChange = onSearchQueryChange,
-                onSearch = onSearch,
-                onSearchPlaylist = onSearchPlaylist,
-                onSearchTypeChange = onSearchTypeChange,
-                onClearSearchHistory = onClearSearchHistory,
-                // 2.8 扫码推送弹窗需要服务器地址
-                serverUrl = serverUrl,
-                onEnableServer = onEnableServer,
-                // 导航栏右键进入搜索页 → 聚焦类型选择器首项
+            // 2.9 本地：已缓存的离线歌曲（断网可直接播放，卡片带删除按钮 + 二次确认）
+            4 -> LocalCacheScreen(
+                songs = cachedSongs,
+                loading = cachedSongsLoading,
+                onPlaySong = onPlayCachedSong,
+                onDeleteSong = onDeleteCachedSong,
+                // 导航栏右键进入 → 聚焦列表首项
                 contentEnterRequester = contentEnterRequester,
+                onExitToNav = { navRequesters[selectedTab].requestFocus() },
                 modifier = Modifier.fillMaxSize()
             )
-            4 -> SettingsScreen(
+            5 -> SettingsScreen(
                 onNavigateToSourceManagement = onNavigateToSourceManagement,
                 onNavigateToInterfaceSettings = onNavigateToInterfaceSettings,
                 // 2.8 缓存管理独立子页面
@@ -917,6 +956,9 @@ fun MainContent(
                 // 2.8 歌词设置
                 lyricTranslationEnabled = lyricTranslationEnabled,
                 onLyricTranslationEnabledChange = onLyricTranslationEnabledChange,
+                // 2.9 启动默认页面
+                defaultStartupTab = defaultStartupTab,
+                onDefaultStartupTabChange = onDefaultStartupTabChange,
                 // 2.8 异常日志导出弹窗需要服务器地址
                 serverUrl = serverUrl,
                 // 2.8 异常日志：HTTP 未开启时询问是否启用
@@ -1836,6 +1878,9 @@ fun SettingsScreen(
     // 2.8 歌词设置：是否显示翻译歌词
     lyricTranslationEnabled: Boolean = true,
     onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
+    // 2.9 启动默认页面设置（侧栏 Tab 索引：0搜索/1歌单/2排行/3收藏/4本地/5设置），默认选择歌单(1)
+    defaultStartupTab: Int = 1,
+    onDefaultStartupTabChange: (Int) -> Unit = {},
     // 2.8 HTTP 服务器地址（异常日志导出弹窗显示 /log 地址；null=未开启服务器）
     serverUrl: String? = null,
     // 2.8 HTTP 未开启时点异常日志 → 询问是否启用（调用方负责启动服务器，如 viewModel.startServer）
@@ -1850,6 +1895,8 @@ fun SettingsScreen(
 ) {
     var showPlatformDialog by remember { mutableStateOf(false) }
     var showQualityDialog by remember { mutableStateOf(false) }
+    // 2.9 启动默认页面设置弹窗
+    var showStartupTabDialog by remember { mutableStateOf(false) }
     // 2.8 歌词设置弹窗
     var showLyricsDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
@@ -1873,8 +1920,8 @@ fun SettingsScreen(
 
     // 进入子路由前点击的设置项索引（rememberSaveable：从子路由返回重新组合后仍可恢复）
     var lastClickedIndex by rememberSaveable { mutableIntStateOf(-1) }
-    // 各设置项的焦点请求器（用于返回后恢复焦点到点击的卡片；共 8 项：默认音乐平台/播放源管理/播放设置/歌词设置/界面设置/缓存管理/异常日志/关于）
-    val itemRequesters = remember { List(8) { FocusRequester() } }
+    // 各设置项的焦点请求器（用于返回后恢复焦点到点击的卡片；共 9 项：默认音乐平台/播放源管理/启动默认页面/播放设置/歌词设置/界面设置/缓存管理/异常日志/关于）
+    val itemRequesters = remember { List(9) { FocusRequester() } }
 
     // 重复点击「设置」tab：滚动回顶部（仅 tick 真正变化时，避免组件重建误触发）
     var lastRefreshTick by remember { mutableIntStateOf(refreshTick) }
@@ -1890,7 +1937,7 @@ fun SettingsScreen(
     LaunchedEffect(restoreTick) {
         if (restoreTick > 0 && restoreTick != lastRestoreTick) {
             lastRestoreTick = restoreTick
-            if (lastClickedIndex in 0..7) {
+            if (lastClickedIndex in 0..8) {
                 itemRequesters[lastClickedIndex].requestFocus()
             }
         }
@@ -1933,12 +1980,24 @@ fun SettingsScreen(
                 onExitToNav = onExitToNav
             )
 
+            // 2.9 启动默认页面设置（搜索/歌单/排行/收藏/本地/设置）
+            val startupTabNames = listOf("搜索音乐", "歌单广场", "音乐排行榜", "我的收藏", "本地缓存歌曲", "应用设置")
+            val currentStartupTabName = startupTabNames.getOrElse(defaultStartupTab) { "歌单广场" }
+            SettingsItem(
+                title = "启动默认页面",
+                subtitle = "设置启动应用时默认展示的页面（当前：$currentStartupTabName）",
+                icon = Icons.Default.Home,
+                onClick = { showStartupTabDialog = true },
+                extraFocusRequester = itemRequesters[2],
+                onExitToNav = onExitToNav
+            )
+
             SettingsItem(
                 title = "播放设置",
                 subtitle = "优先歌曲音质（当前：${qualityShortName(preferredQuality)}）",
                 icon = Icons.Default.Equalizer,
                 onClick = { showQualityDialog = true },
-                extraFocusRequester = itemRequesters[2],
+                extraFocusRequester = itemRequesters[3],
                 onExitToNav = onExitToNav
             )
 
@@ -1948,7 +2007,7 @@ fun SettingsScreen(
                 subtitle = "是否在播放页显示歌词翻译（当前：${if (lyricTranslationEnabled) "开启" else "关闭"}）",
                 icon = Icons.Default.Lyrics,
                 onClick = { showLyricsDialog = true },
-                extraFocusRequester = itemRequesters[3],
+                extraFocusRequester = itemRequesters[4],
                 onExitToNav = onExitToNav
             )
 
@@ -1958,10 +2017,10 @@ fun SettingsScreen(
                 icon = Icons.Default.Palette,
                 onClick = {
                     // 记录点击项：从子路由返回时恢复焦点到本卡片
-                    lastClickedIndex = 4
+                    lastClickedIndex = 5
                     onNavigateToInterfaceSettings()
                 },
-                extraFocusRequester = itemRequesters[4],
+                extraFocusRequester = itemRequesters[5],
                 onExitToNav = onExitToNav
             )
 
@@ -1971,10 +2030,10 @@ fun SettingsScreen(
                 icon = Icons.Default.Storage,
                 onClick = {
                     // 2.8 改为独立子页面；记录点击项：从子路由返回时恢复焦点到本卡片
-                    lastClickedIndex = 5
+                    lastClickedIndex = 6
                     onNavigateToCacheManage()
                 },
-                extraFocusRequester = itemRequesters[5],
+                extraFocusRequester = itemRequesters[6],
                 onExitToNav = onExitToNav
             )
 
@@ -1991,7 +2050,7 @@ fun SettingsScreen(
                         showEnableServerDialog = true
                     }
                 },
-                extraFocusRequester = itemRequesters[6],
+                extraFocusRequester = itemRequesters[7],
                 onExitToNav = onExitToNav
             )
 
@@ -2000,7 +2059,7 @@ fun SettingsScreen(
                 subtitle = "版本号、说明等",
                 icon = Icons.Default.Info,
                 onClick = { showAboutDialog = true },
-                extraFocusRequester = itemRequesters[7],
+                extraFocusRequester = itemRequesters[8],
                 onExitToNav = onExitToNav
             )
         }
@@ -2027,6 +2086,18 @@ fun SettingsScreen(
                 showQualityDialog = false
             },
             onDismiss = { showQualityDialog = false }
+        )
+    }
+
+    // 2.9 启动默认页面选择对话框（电视遥控器友好）
+    if (showStartupTabDialog) {
+        StartupTabSelectDialog(
+            currentTab = defaultStartupTab,
+            onSelect = { tabIndex ->
+                onDefaultStartupTabChange(tabIndex)
+                showStartupTabDialog = false
+            },
+            onDismiss = { showStartupTabDialog = false }
         )
     }
 
@@ -2900,6 +2971,93 @@ fun PlatformSelectDialog(
                                 fontSize = 16.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                 // 灰白底深色文字
+                                color = LXTextPrimary
+                            )
+                            if (isSelected) {
+                                Spacer(modifier = Modifier.weight(1f))
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = LXPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = LXTextSecondary)
+            }
+        },
+        dismissButton = {}
+    )
+}
+
+/**
+ * 2.9 启动默认页面选择对话框（遥控器方向键 + 确认选择）
+ */
+@Composable
+fun StartupTabSelectDialog(
+    currentTab: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tabs = listOf(
+        0 to "搜索音乐",
+        1 to "歌单广场",
+        2 to "音乐排行榜",
+        3 to "我的收藏",
+        4 to "本地缓存歌曲",
+        5 to "应用设置"
+    )
+    val selectedIndex = tabs.indexOfFirst { it.first == currentTab }.let { if (it >= 0) it else 1 }
+    val selectedRequester = remember { FocusRequester() }
+    var initialFocusRequested by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        requestInitialFocus(
+            focusRequester = selectedRequester,
+            attempted = { initialFocusRequested },
+            markAttempted = { initialFocusRequested = true }
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LXSurfaceDialog,
+        title = {
+            Text(
+                text = "选择启动默认页面",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = LXTextPrimary
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                tabs.forEachIndexed { index, (tabIndex, tabName) ->
+                    val isSelected = tabIndex == currentTab
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(if (index == selectedIndex) Modifier.focusRequester(selectedRequester) else Modifier)
+                            .lxSelectorFocus(shape = RoundedCornerShape(8.dp), glow = false, animated = false)
+                            .clickable { onSelect(tabIndex) },
+                        color = if (isSelected) LXPrimary.copy(alpha = 0.12f) else Color.Transparent,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = tabName,
+                                fontSize = 16.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                 color = LXTextPrimary
                             )
                             if (isSelected) {

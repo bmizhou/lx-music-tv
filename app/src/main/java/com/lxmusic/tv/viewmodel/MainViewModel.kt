@@ -112,8 +112,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // 搜索页状态提升到 ViewModel，保证从播放页返回后搜索词/平台/触发状态不丢失
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-    // 2.8 当前主页 tab（侧栏索引；搜索页 = 3）。Web 端搜索推送/清空仅在搜索页生效
-    private val _currentTab = MutableStateFlow(0)
+    // 2.8 当前主页 tab（侧栏索引；0搜索/1歌单/2排行/3收藏/4本地/5设置）。默认启动停留歌单(1)
+    private val _currentTab = MutableStateFlow(1)
     val currentTab: StateFlow<Int> = _currentTab.asStateFlow()
     // 2.8 当前导航路由（MainActivity 同步）：搜索结果页等独立路由时 Web 推送不生效
     private val _currentRoute = MutableStateFlow("main")
@@ -223,6 +223,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // 否则 resume 旧 MediaItem 仍会失败；playSong 成功启动时重置
     private var playNeedsReFetch = false
 
+    // ========== 2.9 本地离线缓存歌曲（侧栏「本地」Tab） ==========
+    // 展示应用边播边缓存下来的完整离线歌曲；列表由 CacheManager 扫描 SimpleCache 得到
+    private val _cachedSongs = MutableStateFlow<List<CacheManager.CachedSongItem>>(emptyList())
+    val cachedSongs: StateFlow<List<CacheManager.CachedSongItem>> = _cachedSongs.asStateFlow()
+    private val _cachedSongsLoading = MutableStateFlow(false)
+    val cachedSongsLoading: StateFlow<Boolean> = _cachedSongsLoading.asStateFlow()
+
+    // 2.9 启动默认页面（侧栏 Tab 索引：0搜索/1歌单/2排行/3收藏/4本地/5设置），默认选择歌单(1)
+    private val _defaultStartupTab = MutableStateFlow(1)
+    val defaultStartupTab: StateFlow<Int> = _defaultStartupTab.asStateFlow()
+
     // ========== 播放历史和收藏 ==========
     private val _playHistory = MutableStateFlow<List<PlayHistory>>(emptyList())
     val playHistory: StateFlow<List<PlayHistory>> = _playHistory.asStateFlow()
@@ -293,6 +304,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // 2.8 读取「显示翻译歌词」开关（歌词设置，默认开启）
         _lyricTranslationEnabled.value = loadLyricTranslationEnabled()
+
+        // 2.9 读取启动默认页面（侧栏 Tab）
+        _defaultStartupTab.value = loadDefaultStartupTab()
+
+        // 2.9 启动时清理上次异常退出残留的半截缓存碎片（跳过正在播放的歌曲）
+        viewModelScope.launch(Dispatchers.IO) {
+            CacheManager.cleanupIncompleteCache(app)
+        }
 
         // 加载搜索页热门搜索关键词
         loadHotKeywords(_defaultPlatform.value)
@@ -439,14 +458,102 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ========== HTTP服务器 ==========
 
-    /** 2.8 搜索页在侧栏的 tab 索引（0歌单/1排行/2收藏/3搜索/4设置），Web 推送/清空仅搜索页生效 */
-    private val SEARCH_TAB_INDEX = 3
+    /** 2.8 搜索页在侧栏的 tab 索引（0搜索/1歌单/2排行/3收藏/4本地/5设置），Web 推送/清空仅搜索页生效 */
+    private val SEARCH_TAB_INDEX = 0
 
     /**
      * 2.8 主页 tab 切换同步（MainActivity onTabSelected 调用）：Web 端推送只在搜索页生效
      */
     fun setCurrentTab(tab: Int) {
         _currentTab.value = tab
+        // 2.9 切到「本地」Tab：总是重新扫描一次，保证新缓存完成的歌曲即时出现
+        if (tab == LOCAL_TAB_INDEX) {
+            loadCachedSongs()
+        }
+    }
+
+    /** 「本地」Tab 在侧栏的索引（4） */
+    private val LOCAL_TAB_INDEX = 4
+
+    // ========== 2.9 本地离线缓存歌曲（侧栏「本地」Tab） ==========
+
+    /** 扫描已完整缓存的离线歌曲列表（IO 线程，UI 直接读 cachedSongs 状态） */
+    fun loadCachedSongs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _cachedSongsLoading.value = true
+            try {
+                _cachedSongs.value = CacheManager.getCachedSongs(app)
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("LX-MainViewModel", "扫描已缓存歌曲失败: ${e.message}", e)
+            } finally {
+                _cachedSongsLoading.value = false
+            }
+        }
+    }
+
+    /** 删除单首缓存歌曲（二次确认后调用）：删除其全部音质版本并刷新列表 */
+    fun deleteCachedSong(item: CacheManager.CachedSongItem) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                CacheManager.removeCachedSong(app, item.cacheKey)
+                _cachedSongs.value = CacheManager.getCachedSongs(app)
+                _toastMessage.value = "已删除《${item.name}》的离线缓存"
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("LX-MainViewModel", "删除缓存歌曲失败: ${e.message}", e)
+                _toastMessage.value = "删除失败: ${e.message}"
+            }
+        }
+    }
+
+    /** 播放本地缓存歌曲（离线可播：命中本地完整缓存，无需联网解析） */
+    fun playCachedSong(item: CacheManager.CachedSongItem) {
+        val platform = MusicPlatform.entries.firstOrNull { it.key == item.platformKey }
+            ?: MusicPlatform.KW
+        val song = Song(
+            id = item.musicId,
+            name = item.name,
+            singer = item.singer,
+            albumName = null,
+            albumId = null,
+            picUrl = item.picUrl,
+            duration = null,
+            platform = platform
+        )
+        playSong(song, listOf(song))
+    }
+
+    /**
+     * 2.9 设置应用启动时默认停留的侧栏 Tab（0搜索/1歌单/2排行/3收藏/4本地/5设置），默认选择歌单(1)
+     */
+    fun setDefaultStartupTab(tabIndex: Int) {
+        if (tabIndex !in 0..5) return
+        _defaultStartupTab.value = tabIndex
+        try {
+            app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putInt("default_startup_tab_v2", tabIndex)
+                .apply()
+        } catch (e: Exception) {
+            Log.e("LX-MainViewModel", "保存启动默认Tab失败: ${e.message}")
+        }
+    }
+
+    private fun loadDefaultStartupTab(): Int {
+        return try {
+            val sp = app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+            if (!sp.contains("default_startup_tab_v2")) {
+                // 默认选择歌单(1)
+                1
+            } else {
+                sp.getInt("default_startup_tab_v2", 1)
+            }
+        } catch (e: Exception) {
+            1
+        }
     }
 
     /**
@@ -1406,8 +1513,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _currentPlayQuality.value = null
             loadLyrics(song)
 
-            // 记录播放历史
+            // 2.9 智能音质与本地缓存优先：
+            // 1. 本地已有任意音质的完整音频缓存 → 高音质优先命中（FLAC > 320K > 128K），
+            //    直接用该缓存音质播放，跳过坏源与网络请求，实现零延迟离线秒播；
+            // 2. 否则使用用户偏好音质联网解析。
+            // ⚠️ 该项是「离线几天后缓存歌曲仍能播放」的关键：即使 URL 缓存早已过期（TTL 2h），
+            // 只要本地音频分片仍在盘上，就以缓存音质命中（CacheDataSource 读本地不触网）。
+            val cachedQuality = try {
+                CacheManager.findCachedQuality(app, song)
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            val targetQuality = cachedQuality ?: _preferredQuality.value
+            _currentPlayQuality.value = targetQuality
+
+            // 记录播放历史（2.9 同时写入缓存歌曲元数据，供「本地」Tab 还原歌名/歌手/封面）
             try {
+                CacheManager.saveSongMeta(song)
                 dataStoreManager.addPlayHistory(
                     PlayHistory(
                         musicId = song.id,
@@ -1424,10 +1548,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             // 获取播放URL并播放（失败提示由 doResolveAndPlay 处理）
             try {
-                Log.d("LX-MainViewModel", "[playSong] 获取URL: ${song.name}, playerService=${if (playerService != null) "非空" else "null"}, isServiceBound=$isServiceBound")
+                Log.d("LX-MainViewModel", "[playSong] 获取URL: ${song.name}, quality=${targetQuality.displayName}, playerService=${if (playerService != null) "非空" else "null"}, isServiceBound=$isServiceBound")
                 // 2.8 播放 URL 只走 JS 源；返回的 sourceId 记录当前 URL 来源，
                 // 播放失败时把该源加入黑名单，重试跳过它真正尝试下一个源
-                doResolveAndPlay(song, playlist, _preferredQuality.value)
+                doResolveAndPlay(song, playlist, targetQuality)
             } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
                 _toastMessage.value = "播放失败: ${e.message}"
                 _isPlaying.value = false

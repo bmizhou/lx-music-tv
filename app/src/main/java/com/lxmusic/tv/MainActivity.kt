@@ -11,6 +11,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -91,9 +92,19 @@ fun LXMusicApp() {
     val viewModel: MainViewModel = viewModel()
     val context = LocalContext.current
 
+    // 2.9 启动默认页面：读取持久化的默认 tab（0搜索/1歌单/2排行/3收藏/4本地/5设置），默认选择歌单(1)
+    val defaultStartupTab by viewModel.defaultStartupTab.collectAsState()
     // 首页 tab 状态提升到 LXMusicApp 层级（NavHost 外部），
     // 导航到子页面（source_management / player 等）再返回时保持当前 tab 不重置到歌单首页
-    var homeTab by remember { mutableIntStateOf(0) }
+    var homeTab by rememberSaveable { mutableIntStateOf(viewModel.defaultStartupTab.value) }
+    var startupTabInitialized by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(defaultStartupTab) {
+        if (!startupTabInitialized) {
+            startupTabInitialized = true
+            homeTab = defaultStartupTab
+            viewModel.setCurrentTab(defaultStartupTab)
+        }
+    }
     // 重复点击当前 tab 的刷新信号：点击与当前相同的 tab 时 +1，
     // 歌单/排行页监听后重置滚动位置并重新加载（用户要求重复点击生效刷新）
     var tabRefreshTick by remember { mutableIntStateOf(0) }
@@ -181,6 +192,9 @@ fun LXMusicApp() {
             val suggestions by viewModel.suggestions.collectAsState()
             val hotSongs by viewModel.hotSongs.collectAsState()
             val searchHistory by viewModel.searchHistory.collectAsState()
+            // 2.9 本地缓存歌曲状态
+            val cachedSongs by viewModel.cachedSongs.collectAsState()
+            val cachedSongsLoading by viewModel.cachedSongsLoading.collectAsState()
 
             // ===== 首页返回退出确认 =====
             var showExitDialog by remember { mutableStateOf(false) }
@@ -322,6 +336,14 @@ fun LXMusicApp() {
                 onOpenFavoritePlaylist = { viewModel.openFavoritePlaylist(it) },
                 onBackFromFavoritePlaylistSongs = { viewModel.backFromFavoritePlaylistSongs() },
                 selectedTab = homeTab,
+                // ===== 2.9 本地缓存歌曲 =====
+                cachedSongs = cachedSongs,
+                cachedSongsLoading = cachedSongsLoading,
+                onPlayCachedSong = { item -> viewModel.playCachedSong(item) },
+                onDeleteCachedSong = { item -> viewModel.deleteCachedSong(item) },
+                // 2.9 启动默认页面
+                defaultStartupTab = defaultStartupTab,
+                onDefaultStartupTabChange = { viewModel.setDefaultStartupTab(it) },
                 // ===== 搜索页内嵌参数（2.6）=====
                 searchQuery = searchQuery,
                 searchPlatform = searchPlatform,
@@ -347,19 +369,21 @@ fun LXMusicApp() {
                 // 2.8 二维码按钮：HTTP 未开启时询问是否启用
                 onEnableServer = { viewModel.startServer() },
                 onTabSelected = { newTab ->
-                    // 2.8 同步当前 tab 到 VM：Web 端搜索推送/清空仅在搜索页（3）生效
+                    // 2.8 同步当前 tab 到 VM：Web 端搜索推送/清空仅在搜索页（0）生效
                     viewModel.setCurrentTab(newTab)
                     // 重复点击当前 tab → 触发刷新（歌单/排行重置滚动并重新加载）
                     if (newTab == homeTab) {
                         tabRefreshTick++
                     }
                     // 切到搜索 tab 时清空上次输入，避免残留关键词（原 navigate("search") 时的行为）
-                    if (newTab == 3) {
+                    // 2.9 搜索 tab 现为索引 0（Logo 下方）
+                    if (newTab == 0) {
                         viewModel.updateSearchQuery("")
                     }
                     // 切走收藏页时退出歌单详情（清除歌曲列表状态），
                     // 避免切回收藏页仍停留在歌单歌曲列表、顶部「歌曲/歌单」无法切换
-                    if (newTab != 2) {
+                    // 2.9 收藏 tab 现为索引 3
+                    if (newTab != 3) {
                         viewModel.backFromFavoritePlaylistSongs()
                     }
                     homeTab = newTab
