@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lxmusic.tv.data.cache.CacheManager
 import com.lxmusic.tv.data.model.MusicPlatform
+import com.lxmusic.tv.data.model.Song
 import com.lxmusic.tv.presentation.component.RemoteImage
 import com.lxmusic.tv.presentation.component.lxCircleButtonFocus
 import com.lxmusic.tv.presentation.component.lxFocusBorder
@@ -47,7 +48,8 @@ import com.lxmusic.tv.presentation.theme.LXTextSecondary
 fun LocalCacheScreen(
     songs: List<CacheManager.CachedSongItem>,
     loading: Boolean,
-    onPlaySong: (CacheManager.CachedSongItem) -> Unit,
+    onPlaySong: (Song, List<Song>) -> Unit,
+    onPlaySongStay: (Song, List<Song>) -> Unit,
     onDeleteSong: (CacheManager.CachedSongItem) -> Unit,
     contentEnterRequester: FocusRequester? = null,
     onExitToNav: (() -> Unit)? = null,
@@ -55,6 +57,8 @@ fun LocalCacheScreen(
 ) {
     // 正在待二次确认删除的歌曲条目（null 表示未打开弹窗）
     var songPendingDelete by remember { mutableStateOf<CacheManager.CachedSongItem?>(null) }
+    // 将全部本地缓存歌曲转换为 Song 领域模型，作为整列表播放队列复用
+    val allSongs = remember(songs) { songs.map { it.toSong() } }
 
     Box(
         modifier = modifier
@@ -152,7 +156,8 @@ fun LocalCacheScreen(
                             LocalCacheSongRow(
                                 index = index,
                                 songItem = songItem,
-                                onPlay = { onPlaySong(songItem) },
+                                onPlayStay = { onPlaySongStay(songItem.toSong(), listOf(songItem.toSong())) },
+                                onPlayOpen = { onPlaySong(songItem.toSong(), allSongs) },
                                 onDeleteClick = { songPendingDelete = songItem },
                                 focusRequester = if (index == 0) contentEnterRequester else null,
                                 onExitToNav = onExitToNav,
@@ -185,7 +190,8 @@ fun LocalCacheScreen(
 private fun LocalCacheSongRow(
     index: Int,
     songItem: CacheManager.CachedSongItem,
-    onPlay: () -> Unit,
+    onPlayStay: () -> Unit,
+    onPlayOpen: () -> Unit,
     onDeleteClick: () -> Unit,
     focusRequester: FocusRequester? = null,
     onExitToNav: (() -> Unit)? = null,
@@ -339,7 +345,7 @@ private fun LocalCacheSongRow(
                             }
                         } else Modifier
                     )
-                    .clickable { onPlay() },
+                    .clickable { onPlayStay() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -352,17 +358,17 @@ private fun LocalCacheSongRow(
 
             Spacer(modifier = Modifier.width(6.dp))
 
-            // 操作按钮②：全屏播放
+            // 操作按钮②：播放全部歌曲并进入播放页（整列表作为播放队列）
             Box(
                 modifier = Modifier
                     .size(40.dp)
                     .lxCircleButtonFocus()
-                    .clickable { onPlay() },
+                    .clickable { onPlayOpen() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.Fullscreen,
-                    contentDescription = "播放",
+                    contentDescription = "播放全部并进入播放页",
                     tint = LXOnCardDark,
                     modifier = Modifier.size(22.dp)
                 )

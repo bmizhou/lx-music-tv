@@ -511,18 +511,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 播放本地缓存歌曲（离线可播：命中本地完整缓存，无需联网解析） */
     fun playCachedSong(item: CacheManager.CachedSongItem) {
-        val platform = MusicPlatform.entries.firstOrNull { it.key == item.platformKey }
-            ?: MusicPlatform.KW
-        val song = Song(
-            id = item.musicId,
-            name = item.name,
-            singer = item.singer,
-            albumName = null,
-            albumId = null,
-            picUrl = item.picUrl,
-            duration = null,
-            platform = platform
-        )
+        val song = item.toSong()
         playSong(song, listOf(song))
     }
 

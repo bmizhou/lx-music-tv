@@ -933,11 +933,12 @@ fun MainContent(
                 onExitToNav = { navRequesters[selectedTab].requestFocus() },
                 modifier = Modifier.fillMaxSize()
             )
-            // 2.9 本地：已缓存的离线歌曲（断网可直接播放，卡片带删除按钮 + 二次确认）
+            // 2.9 本地：已缓存的离线歌曲（断网可直接播放，卡片带全屏整列表播放与删除按钮 + 二次确认）
             4 -> LocalCacheScreen(
                 songs = cachedSongs,
                 loading = cachedSongsLoading,
-                onPlaySong = onPlayCachedSong,
+                onPlaySong = onPlaySong,
+                onPlaySongStay = onPlaySongStay,
                 onDeleteSong = onDeleteCachedSong,
                 // 导航栏右键进入 → 聚焦列表首项
                 contentEnterRequester = contentEnterRequester,

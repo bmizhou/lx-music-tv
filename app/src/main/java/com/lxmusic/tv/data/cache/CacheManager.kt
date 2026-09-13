@@ -8,6 +8,7 @@ import com.google.android.exoplayer2.upstream.cache.SimpleCache
 import com.lxmusic.tv.data.database.CacheItemEntity
 import com.lxmusic.tv.data.database.LxMusicDatabase
 import com.lxmusic.tv.data.model.AudioQuality
+import com.lxmusic.tv.data.model.MusicPlatform
 import com.lxmusic.tv.data.model.Song
 import com.lxmusic.tv.service.player.PlayerService
 import kotlinx.coroutines.runBlocking
@@ -610,7 +611,36 @@ object CacheManager {
         val name: String,
         val singer: String,
         val picUrl: String? = null
-    )
+    ) {
+        /**
+         * 转换为领域模型 Song，供播放器和播放队列直接复用
+         */
+        fun toSong(): Song {
+            val platform = MusicPlatform.entries.firstOrNull { it.key == platformKey }
+                ?: MusicPlatform.KW
+            val parsedQuality = runCatching {
+                if (quality.startsWith("QUALITY_")) AudioQuality.valueOf(quality)
+                else when (quality.lowercase()) {
+                    "128k" -> AudioQuality.QUALITY_128K
+                    "320k" -> AudioQuality.QUALITY_320K
+                    "flac" -> AudioQuality.FLAC
+                    "flac24bit" -> AudioQuality.FLAC_24BIT
+                    else -> AudioQuality.valueOf(quality)
+                }
+            }.getOrNull()
+            return Song(
+                id = musicId,
+                name = name,
+                singer = singer,
+                albumName = null,
+                albumId = null,
+                picUrl = picUrl,
+                duration = null,
+                platform = platform,
+                quality = if (parsedQuality != null) listOf(parsedQuality) else emptyList()
+            )
+        }
+    }
 
     /**
      * 解析缓存 key（结构：platformKey|musicId|quality）
