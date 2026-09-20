@@ -30,6 +30,9 @@ class LXMusicApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // 2.9 屏幕自适应基准初始化（确保任何尺寸大屏/触摸屏均按标准 TV 960dp 视口等比例缩放）
+        com.lxmusic.tv.util.ScreenAdaptation.init(this)
+
         // 初始化缓存管理器（音频 SimpleCache / URL 持久化缓存依赖 applicationContext）
         CacheManager.init(this)
 

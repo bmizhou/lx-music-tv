@@ -87,6 +87,7 @@ import com.lxmusic.tv.presentation.theme.LXBorder
 import com.lxmusic.tv.presentation.theme.LXFocusFill
 import com.lxmusic.tv.presentation.theme.LXTextPrimary
 import com.lxmusic.tv.presentation.theme.LXTextSecondary
+import com.lxmusic.tv.util.ScreenAdaptation
 import com.lxmusic.tv.presentation.theme.LXOnCardDark
 import com.lxmusic.tv.presentation.theme.LXOnCardDarkSecondary
 import kotlinx.coroutines.Dispatchers
@@ -859,8 +860,10 @@ fun MainContent(
                 // 2.8 扫码推送弹窗需要服务器地址
                 serverUrl = serverUrl,
                 onEnableServer = onEnableServer,
-                // 导航栏右键进入搜索页 → 聚焦类型选择器首项
+                // 导航栏右键进入搜索页 → 聚焦内容首项
                 contentEnterRequester = contentEnterRequester,
+                // 2.9 搜索页按左键精准返回侧栏选中的搜索 Tab
+                onExitToNav = { navRequesters[selectedTab].requestFocus() },
                 modifier = Modifier.fillMaxSize()
             )
             1 -> PlaylistScreen(
@@ -1901,6 +1904,8 @@ fun SettingsScreen(
     // 2.8 歌词设置弹窗
     var showLyricsDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
+    // 2.9 设备信息弹窗
+    var showDeviceInfoDialog by remember { mutableStateOf(false) }
     // 2.8 异常日志导出弹窗
     var showLogExportDialog by remember { mutableStateOf(false) }
     // 2.8 HTTP 未启用询问弹窗开关（异常日志需要 Web 端访问，未开服务器先询问）
@@ -1921,8 +1926,8 @@ fun SettingsScreen(
 
     // 进入子路由前点击的设置项索引（rememberSaveable：从子路由返回重新组合后仍可恢复）
     var lastClickedIndex by rememberSaveable { mutableIntStateOf(-1) }
-    // 各设置项的焦点请求器（用于返回后恢复焦点到点击的卡片；共 9 项：默认音乐平台/播放源管理/启动默认页面/播放设置/歌词设置/界面设置/缓存管理/异常日志/关于）
-    val itemRequesters = remember { List(9) { FocusRequester() } }
+    // 各设置项的焦点请求器（共 10 项：默认音乐平台/播放源管理/启动默认页面/播放设置/歌词设置/界面设置/缓存管理/异常日志/设备信息/关于）
+    val itemRequesters = remember { List(10) { FocusRequester() } }
 
     // 重复点击「设置」tab：滚动回顶部（仅 tick 真正变化时，避免组件重建误触发）
     var lastRefreshTick by remember { mutableIntStateOf(refreshTick) }
@@ -1938,7 +1943,7 @@ fun SettingsScreen(
     LaunchedEffect(restoreTick) {
         if (restoreTick > 0 && restoreTick != lastRestoreTick) {
             lastRestoreTick = restoreTick
-            if (lastClickedIndex in 0..8) {
+            if (lastClickedIndex in 0..9) {
                 itemRequesters[lastClickedIndex].requestFocus()
             }
         }
@@ -2055,12 +2060,22 @@ fun SettingsScreen(
                 onExitToNav = onExitToNav
             )
 
+            // 2.9 设备信息：展示当前设备型号、屏幕物理分辨率、系统版本号、DPI 与自适应大屏视口
+            SettingsItem(
+                title = "设备信息",
+                subtitle = "查看设备型号、屏幕分辨率、系统版本及显示参数",
+                icon = Icons.Default.Tv,
+                onClick = { showDeviceInfoDialog = true },
+                extraFocusRequester = itemRequesters[8],
+                onExitToNav = onExitToNav
+            )
+
             SettingsItem(
                 title = "关于",
                 subtitle = "版本号、说明等",
                 icon = Icons.Default.Info,
                 onClick = { showAboutDialog = true },
-                extraFocusRequester = itemRequesters[8],
+                extraFocusRequester = itemRequesters[9],
                 onExitToNav = onExitToNav
             )
         }
@@ -2109,6 +2124,11 @@ fun SettingsScreen(
             onTranslationEnabledChange = onLyricTranslationEnabledChange,
             onDismiss = { showLyricsDialog = false }
         )
+    }
+
+    // 2.9 设备信息对话框：显示设备型号、屏幕物理分辨率、DPI 与自适应视口
+    if (showDeviceInfoDialog) {
+        DeviceInfoDialog(onDismiss = { showDeviceInfoDialog = false })
     }
 
     // 关于对话框：显示当前安装的版本号（versionName + versionCode），用于核对构建是否生效
@@ -2244,6 +2264,113 @@ private fun generateSettingsQrCode(content: String, size: Int = 300): androidx.c
         android.graphics.Bitmap.createBitmap(pixels, size, size, android.graphics.Bitmap.Config.RGB_565).asImageBitmap()
     } catch (e: Exception) {
         null
+    }
+}
+
+/**
+ * 2.9 设备信息对话框：展示设备型号、屏幕物理分辨率、系统版本号、DPI 以及大屏自适应参数。
+ * 方便在大屏/24寸触摸电视/4K电视上直观核对物理分辨率与自适应视口。
+ */
+@Composable
+fun DeviceInfoDialog(onDismiss: () -> Unit) {
+    val confirmRequester = remember { FocusRequester() }
+    var initialFocusRequested by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        if (!initialFocusRequested) {
+            initialFocusRequested = true
+            try { confirmRequester.requestFocus() } catch (_: Exception) {}
+        }
+    }
+
+    val brand = Build.BRAND.replaceFirstChar { it.uppercase() }
+    val model = Build.MODEL
+    val manufacturer = Build.MANUFACTURER
+    val androidVersion = Build.VERSION.RELEASE
+    val apiLevel = Build.VERSION.SDK_INT
+    val deviceCode = Build.DEVICE
+    val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "未知"
+
+    val rawWidth = ScreenAdaptation.rawWidthPixels
+    val rawHeight = ScreenAdaptation.rawHeightPixels
+    val rawDpi = ScreenAdaptation.rawDensityDpi
+    val rawDensity = ScreenAdaptation.rawDensity
+
+    val adaptedDensity = ScreenAdaptation.adaptedDensity
+    val adaptedWidthDp = (rawWidth / adaptedDensity).toInt()
+    val adaptedHeightDp = (rawHeight / adaptedDensity).toInt()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LXSurfaceDialog,
+        shape = RoundedCornerShape(14.dp),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Tv,
+                    contentDescription = null,
+                    tint = LXPrimary,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "设备与显示信息",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LXTextPrimary
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                DeviceInfoRow("设备型号", "$brand $model ($manufacturer)")
+                DeviceInfoRow("系统版本", "Android $androidVersion (API $apiLevel)")
+                DeviceInfoRow("硬件架构", "$deviceCode · $abi")
+                Divider(color = LXBorder.copy(alpha = 0.5f), thickness = 0.5.dp)
+                DeviceInfoRow("屏幕物理分辨率", "$rawWidth × $rawHeight 像素")
+                DeviceInfoRow("系统原始密度", "$rawDpi DPI (density: $rawDensity)")
+                DeviceInfoRow("大屏自适应视口", "$adaptedWidthDp × $adaptedHeightDp DP")
+                DeviceInfoRow("视口适配倍率", "${"%.2f".format(adaptedDensity)}× (标准 960dp 基准)")
+                Text(
+                    text = "说明：应用以标准 960dp 为设计基准视口，无论设备物理 DPI 是 160 还是 320，均会自动等比例自适应缩放，确保大屏与触摸屏显示比例完全一致。",
+                    fontSize = 12.sp,
+                    color = LXTextSecondary,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                modifier = Modifier.focusRequester(confirmRequester),
+                onClick = onDismiss
+            ) {
+                Text("确定", color = LXPrimary, fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
+private fun DeviceInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = label, fontSize = 13.sp, color = LXTextSecondary)
+        Text(
+            text = value,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            color = LXTextPrimary,
+            textAlign = TextAlign.End
+        )
     }
 }
 

@@ -25,6 +25,14 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
+    <!-- 2.9 显式声明全面支持各种屏幕尺寸与密度（防止触摸电视等平板类固件限制应用视口） -->
+    <supports-screens
+        android:smallScreens="true"
+        android:normalScreens="true"
+        android:largeScreens="true"
+        android:xlargeScreens="true"
+        android:anyDensity="true" />
+
     <application
         android:name=".LXMusicApplication"
         android:allowBackup="true"

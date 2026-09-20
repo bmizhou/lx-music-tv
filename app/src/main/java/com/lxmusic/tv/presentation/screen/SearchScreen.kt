@@ -160,6 +160,8 @@ fun SearchScreen(
     onClearSearchHistory: () -> Unit = {},
     // 导航栏右键进入搜索页时聚焦内容首项（2.6 搜索内嵌为 tab）
     contentEnterRequester: FocusRequester? = null,
+    // 2.9 搜索框向左导航退回侧边栏选中 tab
+    onExitToNav: (() -> Unit)? = null,
     // 2.8 HTTP 服务器地址（扫码推送弹窗显示 /search 地址 + 二维码；null=未开启服务器）
     serverUrl: String? = null,
     // 2.8 HTTP 未开启时点二维码 → 询问是否启用（调用方负责启动服务器，如 viewModel.startServer）
@@ -223,6 +225,12 @@ fun SearchScreen(
     val suggestionFirstRequester = remember { FocusRequester() }
     // 热门列表第一项（联想列右移 / 中间列为空时键盘右移的落点）
     val hotFirstRequester = remember { FocusRequester() }
+    // 2.9 类型选择器首项（歌曲按钮，供搜索框按「下」方向键时精准落焦）
+    val typeFirstRequester = remember { FocusRequester() }
+    // 2.9 二维码扫码按钮（供搜索框按「右」方向键时精准落焦）
+    val qrBtnRequester = remember { FocusRequester() }
+    // 2.9 搜索框焦点请求器（供二维码按钮按「左」或类型选择器按「上」精准回到搜索框）
+    val searchBoxRequester = remember { FocusRequester() }
     // 键盘焦点是否在右边缘键（每行最右列/搜索键）：为 true 时右键才跨列跳联想，
     // 为 false 时右键交给焦点系统做键盘内部导航（A→B）
     var keyboardAtRightEdge by remember { mutableStateOf(false) }
@@ -334,12 +342,45 @@ fun SearchScreen(
                                             showSoftInputOnFocus = false
                                             isCursorVisible = false
 
-                                            // 2. 遥控器确定键（OK / ENTER）唤起系统输入法
+                                            // 2. 遥控器按键事件精准分流：编辑态 vs 导航态（彻底解决上下左右卡死）
                                             setOnKeyListener { v, keyCode, event ->
                                                 if (event.action == AndroidKeyEvent.ACTION_DOWN) {
-                                                    if (keyCode == AndroidKeyEvent.KEYCODE_DPAD_CENTER || keyCode == AndroidKeyEvent.KEYCODE_ENTER) {
-                                                        enterImeEditMode(this)
-                                                        return@setOnKeyListener true
+                                                    // A. 软键盘打字编辑态：按返回键收起输入法，退出编辑态
+                                                    if (isCursorVisible || showSoftInputOnFocus) {
+                                                        if (keyCode == AndroidKeyEvent.KEYCODE_BACK) {
+                                                            exitImeEditMode(this)
+                                                            return@setOnKeyListener true
+                                                        }
+                                                        return@setOnKeyListener false
+                                                    }
+
+                                                    // B. 默认 D-Pad 导航态：显式向四周 Compose 焦点节点路由
+                                                    when (keyCode) {
+                                                        // 确定键 / 回车键：唤起系统输入法
+                                                        AndroidKeyEvent.KEYCODE_DPAD_CENTER,
+                                                        AndroidKeyEvent.KEYCODE_ENTER -> {
+                                                            enterImeEditMode(this)
+                                                            return@setOnKeyListener true
+                                                        }
+                                                        // 方向键下：精准移到下方的类型选择器（“歌曲 / 歌单”）
+                                                        AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
+                                                            tryRequestFocus(typeFirstRequester)
+                                                            return@setOnKeyListener true
+                                                        }
+                                                        // 方向键左：精准移回左侧主导航栏的搜索 Tab
+                                                        AndroidKeyEvent.KEYCODE_DPAD_LEFT -> {
+                                                            onExitToNav?.invoke()
+                                                            return@setOnKeyListener true
+                                                        }
+                                                        // 方向键右：精准移到右侧的扫码推送二维码按钮
+                                                        AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> {
+                                                            tryRequestFocus(qrBtnRequester)
+                                                            return@setOnKeyListener true
+                                                        }
+                                                        // 方向键上：顶层边界消费掉，避免蜂鸣
+                                                        AndroidKeyEvent.KEYCODE_DPAD_UP -> {
+                                                            return@setOnKeyListener true
+                                                        }
                                                     }
                                                 }
                                                 false
@@ -409,6 +450,7 @@ fun SearchScreen(
                                     modifier = Modifier
                                         .weight(1f)
                                         .fillMaxHeight()
+                                        .focusRequester(searchBoxRequester)
                                         .then(if (contentEnterRequester != null) Modifier.focusRequester(contentEnterRequester) else Modifier)
                                 )
                             }
@@ -419,6 +461,7 @@ fun SearchScreen(
                         Box(
                             modifier = Modifier
                                 .size(58.dp)
+                                .focusRequester(qrBtnRequester)
                                 .onFocusChanged { qrBtnFocused = it.isFocused }
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(
@@ -429,6 +472,20 @@ fun SearchScreen(
                                     color = if (qrBtnFocused) FocusBorder else Color.Transparent,
                                     shape = RoundedCornerShape(12.dp)
                                 )
+                                // 2.9 显式按键分流：左键精确回搜索框，下键精确去类型选择器
+                                .onPreviewKeyEvent { event ->
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        when (event.key) {
+                                            Key.DirectionLeft -> {
+                                                tryRequestFocus(searchBoxRequester)
+                                            }
+                                            Key.DirectionDown -> {
+                                                tryRequestFocus(typeFirstRequester)
+                                            }
+                                            else -> false
+                                        }
+                                    } else false
+                                }
                                 .clickable {
                                     if (serverUrl != null) {
                                         showQrDialog = true
@@ -506,6 +563,8 @@ fun SearchScreen(
                             onTypeSelected = onSearchTypeChange,
                             // 跟踪类型选择器是否停在最右按钮（歌单），用于右键跨列路由到联想列
                             onFocusAtRightEdgeChange = { typeAtRightEdge = it },
+                            extraFocusRequester = typeFirstRequester,
+                            onUpNavigate = { tryRequestFocus(searchBoxRequester) },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -845,6 +904,8 @@ fun SearchTypeSelector(
     onFocusAtRightEdgeChange: (Boolean) -> Unit = {},
     // 外部注入的焦点请求器（导航栏右键进入搜索页时聚焦类型选择器首项，2.6 内嵌 tab）
     extraFocusRequester: FocusRequester? = null,
+    // 2.9 向上导航回到搜索框
+    onUpNavigate: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val types = listOf(SearchType.SONG, SearchType.PLAYLIST)
@@ -852,7 +913,16 @@ fun SearchTypeSelector(
     // 停留在左侧导航栏，按右键才通过 extraFocusRequester（contentEnterRequester）进入本选择器
 
     Row(
-        modifier = modifier,
+        modifier = modifier.then(
+            if (onUpNavigate != null) {
+                Modifier.onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
+                        onUpNavigate()
+                        true
+                    } else false
+                }
+            } else Modifier
+        ),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         types.forEachIndexed { index, type ->

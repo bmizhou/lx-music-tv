@@ -2,6 +2,7 @@ package com.lxmusic.tv
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -12,6 +13,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import com.lxmusic.tv.util.ScreenAdaptation
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -68,18 +72,31 @@ import com.lxmusic.tv.viewmodel.MainViewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 2.9 统一大屏自适应 Density（以 960dp 为基准设计视口，彻底解决 24 寸触摸电视等低 DPI 设备 UI 缩水、字体偏小、卡片比例畸变裁剪问题）
+        ScreenAdaptation.init(this)
         enableEdgeToEdge()
         // 启动时先恢复持久化的主题模式/主题色（模块级单一数据源，见 Theme.kt）
         initThemeState(applicationContext)
         setContent {
-            // 主题模式：读取模块级 State（currentThemeMode），与界面设置页写入的是同一份，
-            // 规避 NavHost 目的地内 viewModel() 为返回栈条目作用域、主 Activity 收不到改动的坑
-            val themeMode = currentThemeMode
-            // 主题模式：浅色/深色（界面设置持久化；默认浅色）。切换后整个应用（含 Material 主题与自定义令牌）随之重设。
-            LXMusicTheme(darkTheme = themeMode == LXThemeMode.DARK) {
-                LXMusicApp()
+            val customDensity = Density(
+                density = ScreenAdaptation.adaptedDensity,
+                fontScale = 1.0f
+            )
+            CompositionLocalProvider(LocalDensity provides customDensity) {
+                // 主题模式：读取模块级 State（currentThemeMode），与界面设置页写入的是同一份，
+                // 规避 NavHost 目的地内 viewModel() 为返回栈条目作用域、主 Activity 收不到改动的坑
+                val themeMode = currentThemeMode
+                // 主题模式：浅色/深色（界面设置持久化；默认浅色）。切换后整个应用（含 Material 主题与自定义令牌）随之重设。
+                LXMusicTheme(darkTheme = themeMode == LXThemeMode.DARK) {
+                    LXMusicApp()
+                }
             }
         }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        ScreenAdaptation.apply(this)
     }
 }
 
