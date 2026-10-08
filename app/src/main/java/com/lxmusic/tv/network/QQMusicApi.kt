@@ -21,20 +21,27 @@ class QQMusicApi(
 ) {
     companion object {
         private const val TAG = "QQMusicApi"
-        // 老版搜索接口（musicu.fcg 的 DoSearchForQQMusicDesktop 已失效返回 code=2001，此接口实测可用）
-        private const val SEARCH_URL = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
+        // 2.9 (参考 lx-music-desktop PR #2848):
+        // 将搜索接口从失效风控的 client_search_cp 切换至 PC 端 DoSearchForQQMusicDesktop + musics.fcg(带 zzcSign 签名)
+        private const val SEARCH_URL = "https://u.y.qq.com/cgi-bin/musics.fcg"
         private const val PLAY_URL = "https://u.y.qq.com/cgi-bin/musicu.fcg"
         // 大封面：800x800（播放页大图更清晰；列表小图由 RemoteImage 子采样，不影响内存）
-        private const val COVER_URL_PREFIX = "https://y.qq.com/music/photo_new/T002R800x800M000"
+        private const val COVER_URL_PREFIX = "https://y.gtimg.cn/music/photo_new/T002R800x800M000"
         // QQ 接口风控要求携带 Referer，否则返回空结果
         private val QQ_HEADERS = mapOf(
             "Referer" to "https://y.qq.com/",
             "Origin" to "https://y.qq.com"
         )
+        // 搜索专用请求头（包含桌面端/移动端特定 UA）
+        private val SEARCH_HEADERS = mapOf(
+            "Referer" to "https://y.qq.com/",
+            "Origin" to "https://y.qq.com",
+            "User-Agent" to "QQMusic 14090508(android 12)"
+        )
     }
 
     /**
-     * 搜索音乐
+     * 搜索音乐（参考 lx-music-desktop PR #2848: PC端 DoSearchForQQMusicDesktop + musics.fcg(zzcSign)）
      * @param keyword 搜索关键词
      * @param page 页码（从1开始）
      * @param limit 每页数量
@@ -42,11 +49,46 @@ class QQMusicApi(
      */
     suspend fun search(keyword: String, page: Int = 1, limit: Int = 30): QQMusicSearchResult = withContext(Dispatchers.IO) {
         try {
-            val url = "$SEARCH_URL?w=${URLEncoder.encode(keyword, "UTF-8")}&format=json&p=$page&n=$limit&cr=1"
+            val searchId = QqSignUtil.getSearchId()
+            val requestBody = JSONObject().apply {
+                put("comm", JSONObject().apply {
+                    put("_channelid", "0")
+                    put("_os_version", "6.2.9200-2")
+                    put("ct", "19")
+                    put("cv", "2151")
+                    put("guid", "1F70E520B2EAA7D25E11760783C53CA9")
+                    put("patch", "118")
+                    put("psrf_access_token_expiresAt", 0)
+                    put("psrf_qqaccess_token", "")
+                    put("psrf_qqopenid", "")
+                    put("psrf_qqunionid", "")
+                    put("tmeAppID", "qqmusic")
+                    put("tmeLoginType", 0)
+                    put("uin", "0")
+                    put("wid", "7223299733393904640")
+                })
+                put("music.search.SearchCgiService", JSONObject().apply {
+                    put("module", "music.search.SearchCgiService")
+                    put("method", "DoSearchForQQMusicDesktop")
+                    put("param", JSONObject().apply {
+                        put("grp", 1)
+                        put("num_per_page", limit)
+                        put("page_num", page)
+                        put("query", keyword)
+                        put("remoteplace", "txt.newclient.top")
+                        put("search_type", 0)
+                        put("searchid", searchId)
+                    })
+                })
+            }
 
-            Log.d(TAG, "搜索请求: $keyword, page=$page, limit=$limit")
+            val bodyStr = requestBody.toString()
+            val sign = QqSignUtil.zzcSign(bodyStr)
+            val url = "$SEARCH_URL?sign=$sign"
 
-            val response = httpClient.get(url, headers = QQ_HEADERS)
+            Log.d(TAG, "搜索请求: $keyword, page=$page, limit=$limit, sign=$sign")
+
+            val response = httpClient.post(url, bodyStr, contentType = "application/json", headers = SEARCH_HEADERS)
             if (!response.isSuccess) {
                 Log.e(TAG, "搜索请求失败: ${response.code} ${response.message}")
                 return@withContext QQMusicSearchResult(
@@ -58,9 +100,26 @@ class QQMusicApi(
             }
 
             val json = parseToObj(response.body)
-            val data = json.optJSONObject("data") ?: JsonObject(emptyMap())
-            val song = data.optJSONObject("song") ?: JsonObject(emptyMap())
-            val list = song.optJSONArray("list") ?: JsonArray(emptyList())
+            val rootCode = json.optInt("code", -1)
+            // 兼容返回结构：music.search.SearchCgiService 或 req (PR #2848)
+            val cgiService = json.optJSONObject("music.search.SearchCgiService") ?: json.optJSONObject("req")
+            val cgiCode = cgiService?.optInt("code", -1) ?: -1
+
+            if (rootCode != 0 || cgiCode != 0) {
+                Log.e(TAG, "搜索接口返回错误: rootCode=$rootCode, cgiCode=$cgiCode")
+                return@withContext QQMusicSearchResult(
+                    list = emptyList(),
+                    total = 0,
+                    page = page,
+                    allPage = 0
+                )
+            }
+
+            val data = cgiService?.optJSONObject("data") ?: JsonObject(emptyMap())
+            val body = data.optJSONObject("body") ?: JsonObject(emptyMap())
+            // 兼容新结构 body.song.list 与旧结构 body.item_song
+            val songObj = body.optJSONObject("song")
+            val list = songObj?.optJSONArray("list") ?: body.optJSONArray("item_song") ?: JsonArray(emptyList())
 
             val songs = mutableListOf<QQMusicSong>()
             for (i in 0 until list.length()) {
@@ -71,8 +130,11 @@ class QQMusicApi(
                 }
             }
 
-            // 获取总数
-            val total = song.optInt("totalnum", 0)
+            // 获取总数：兼容 meta.sum 与 meta.estimate_sum
+            val meta = data.optJSONObject("meta")
+            val total = meta?.optInt("sum", 0).takeIf { (it ?: 0) > 0 }
+                ?: meta?.optInt("estimate_sum", 0).takeIf { (it ?: 0) > 0 }
+                ?: songs.size
             val allPage = if (total > 0) (total + limit - 1) / limit else 0
 
             Log.d(TAG, "搜索完成: ${songs.size} 首歌曲, 总计 $total 首")
@@ -267,34 +329,54 @@ class QQMusicApi(
 
     /**
      * 解析搜索结果中的单首歌曲
-     * 对应 client_search_cp 接口返回的字段
+     * 兼容 DoSearchForQQMusicDesktop 与旧 client_search_cp 接口返回的字段
      */
     private fun parseSong(item: JsonObject): QQMusicSong? {
         return try {
-            val songMid = item.optString("songmid", "")
+            val songMid = item.optString("mid", "").ifEmpty { item.optString("songmid", "") }
             if (songMid.isEmpty()) return null
 
-            val name = item.optString("songname", "")
+            val name = item.optString("title", "")
+                .ifEmpty { item.optString("name", "") }
+                .ifEmpty { item.optString("songname", "") }
+
             val singerList = item.optJSONArray("singer") ?: JsonArray(emptyList())
             val artist = if (singerList.length() > 0) {
-                singerList.getJSONObject(0).optString("name", "")
+                val names = mutableListOf<String>()
+                for (i in 0 until singerList.length()) {
+                    val s = singerList.getJSONObject(i).optString("name", "")
+                    if (s.isNotEmpty()) names.add(s)
+                }
+                names.joinToString("、").ifEmpty { item.optString("singerName", "") }
             } else {
-                ""
+                item.optString("singerName", "")
             }
 
-            val albumMid = item.optString("albummid", "")
-            val album = item.optString("albumname", "")
-            val duration = item.optLong("interval", 0) * 1000 // 转毫秒
+            val albumObj = item.optJSONObject("album")
+            val albumMid = albumObj?.optString("mid", "")?.ifEmpty { item.optString("albummid", "") } ?: item.optString("albummid", "")
+            val album = albumObj?.optString("title", "")
+                ?.ifEmpty { albumObj.optString("name", "") }
+                ?.ifEmpty { item.optString("albumname", "") }
+                ?: item.optString("albumname", "")
 
-            // 封面 URL: T002R800x800M000{albummid}.jpg（大封面，列表由 RemoteImage 子采样）
-            val picUrl = if (albumMid.isNotEmpty()) "$COVER_URL_PREFIX${albumMid}.jpg" else ""
+            val fileObj = item.optJSONObject("file")
+            val mediaMid = fileObj?.optString("media_mid", "")
+                ?.ifEmpty { item.optString("media_mid", "") }
+                ?.ifEmpty { item.optString("strMediaMid", "") }
+                ?: item.optString("media_mid", "").ifEmpty { item.optString("strMediaMid", "") }
 
-            // 获取媒体mid（老接口两个字段都可能有）
-            val mediaMid = item.optString("media_mid", "")
-                .ifEmpty { item.optString("strMediaMid", "") }
+            val duration = item.optLong("interval", 0) * 1000L // 转毫秒
 
-            // 解析音质信息
-            val types = parseQualityInfo(item)
+            // 封面 URL: T002R800x800M000{albummid}.jpg（优先专辑封面；无专辑封面时使用首位歌手头像）
+            val picUrl = if (albumMid.isNotEmpty() && albumMid != "空") {
+                "$COVER_URL_PREFIX${albumMid}.jpg"
+            } else {
+                val firstSingerMid = if (singerList.length() > 0) singerList.getJSONObject(0).optString("mid", "") else ""
+                if (firstSingerMid.isNotEmpty()) "https://y.gtimg.cn/music/photo_new/T001R500x500M000${firstSingerMid}.jpg" else ""
+            }
+
+            // 解析音质信息（兼容 PC 端 file 对象与旧版 sizeXXX 字段）
+            val types = parseQualityInfo(item, fileObj)
 
             QQMusicSong(
                 songMid = songMid,
@@ -315,34 +397,37 @@ class QQMusicApi(
     }
 
     /**
-     * 解析音质信息（client_search_cp 接口的 sizeXXX 字段）
+     * 解析音质信息（优先读取新版 file 对象中的 size_xxx 字段，兼容旧版 sizeXXX）
      */
-    private fun parseQualityInfo(item: JsonObject): List<QQMusicSongType> {
+    private fun parseQualityInfo(item: JsonObject, fileObj: JsonObject? = null): List<QQMusicSongType> {
         val types = mutableListOf<QQMusicSongType>()
 
-        // 检查128k音质
-        if (item.has("size128")) {
-            types.add(QQMusicSongType(type = "128k", fileSize = item.optLong("size128", 0).toString()))
+        if (fileObj != null) {
+            val size128 = fileObj.optLong("size_128mp3", 0L)
+            if (size128 > 0) types.add(QQMusicSongType(type = "128k", fileSize = size128.toString()))
+
+            val size320 = fileObj.optLong("size_320mp3", 0L)
+            if (size320 > 0) types.add(QQMusicSongType(type = "320k", fileSize = size320.toString()))
+
+            val sizeFlac = fileObj.optLong("size_flac", 0L)
+            if (sizeFlac > 0) types.add(QQMusicSongType(type = "flac", fileSize = sizeFlac.toString()))
+
+            val sizeHires = fileObj.optLong("size_hires", 0L)
+            if (sizeHires > 0) types.add(QQMusicSongType(type = "flac24bit", fileSize = sizeHires.toString()))
         }
 
-        // 检查320k音质
-        if (item.has("size320")) {
-            types.add(QQMusicSongType(type = "320k", fileSize = item.optLong("size320", 0).toString()))
+        // 旧版字段兜底
+        if (types.isEmpty()) {
+            if (item.has("size128")) types.add(QQMusicSongType(type = "128k", fileSize = item.optLong("size128", 0L).toString()))
+            if (item.has("size320")) types.add(QQMusicSongType(type = "320k", fileSize = item.optLong("size320", 0L).toString()))
+            if (item.has("sizeflac")) types.add(QQMusicSongType(type = "flac", fileSize = item.optLong("sizeflac", 0L).toString()))
+            if (item.has("sizeogg")) types.add(QQMusicSongType(type = "ogg", fileSize = item.optLong("sizeogg", 0L).toString()))
         }
 
-        // 检查flac音质
-        if (item.has("sizeflac")) {
-            types.add(QQMusicSongType(type = "flac", fileSize = item.optLong("sizeflac", 0).toString()))
-        }
-
-        // 检查ogg音质
-        if (item.has("sizeogg")) {
-            types.add(QQMusicSongType(type = "ogg", fileSize = item.optLong("sizeogg", 0).toString()))
-        }
-
-        // 默认128k
+        // 默认兜底
         if (types.isEmpty()) {
             types.add(QQMusicSongType(type = "128k", fileSize = "0"))
+            types.add(QQMusicSongType(type = "320k", fileSize = "0"))
         }
 
         return types
@@ -362,8 +447,8 @@ class QQMusicApi(
             id = id,
             name = qqMusicSong.name,
             singer = qqMusicSong.artist,
-            albumName = qqMusicSong.album,
-            albumId = qqMusicSong.albumMid,
+            albumName = qqMusicSong.album.ifBlank { null },
+            albumId = qqMusicSong.albumMid.ifBlank { null },
             picUrl = qqMusicSong.picUrl.ifEmpty { null },
             duration = qqMusicSong.duration,
             platform = MusicPlatform.TX,
@@ -372,10 +457,78 @@ class QQMusicApi(
                     "128k" -> AudioQuality.QUALITY_128K
                     "320k" -> AudioQuality.QUALITY_320K
                     "flac" -> AudioQuality.FLAC
+                    "flac24bit" -> AudioQuality.FLAC_24BIT
                     else -> null
                 }
             }.ifEmpty { listOf(AudioQuality.QUALITY_128K, AudioQuality.QUALITY_320K) }
         )
+    }
+}
+
+/**
+ * QQ 音乐签名与参数工具类（参考 lx-music-desktop PR #2848）
+ */
+object QqSignUtil {
+    private val PART_1_INDEXES = intArrayOf(23, 14, 6, 36, 16, 40, 7, 19)
+    private val PART_2_INDEXES = intArrayOf(16, 1, 32, 12, 19, 27, 8, 5)
+    private val SCRAMBLE_VALUES = intArrayOf(89, 39, 179, 150, 218, 82, 58, 252, 177, 52, 186, 123, 120, 64, 242, 133, 143, 161, 121, 179)
+
+    /**
+     * 生成请求签名（zzcSign）
+     */
+    fun zzcSign(text: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-1")
+        val digest = md.digest(text.toByteArray(Charsets.UTF_8))
+        val hex = StringBuilder(40)
+        for (b in digest) {
+            val v = b.toInt() and 0xFF
+            if (v < 16) hex.append('0')
+            hex.append(Integer.toHexString(v))
+        }
+        val hexStr = hex.toString() // 40 chars
+
+        val part1 = StringBuilder()
+        for (idx in PART_1_INDEXES) {
+            if (idx in hexStr.indices) {
+                part1.append(hexStr[idx])
+            }
+        }
+
+        val part2 = StringBuilder()
+        for (idx in PART_2_INDEXES) {
+            if (idx in hexStr.indices) {
+                part2.append(hexStr[idx])
+            }
+        }
+
+        val part3 = ByteArray(SCRAMBLE_VALUES.size)
+        for (i in SCRAMBLE_VALUES.indices) {
+            val byteVal = hexStr.substring(i * 2, i * 2 + 2).toInt(16)
+            part3[i] = (SCRAMBLE_VALUES[i] xor byteVal).toByte()
+        }
+
+        val b64 = try {
+            android.util.Base64.encodeToString(part3, android.util.Base64.NO_WRAP)
+        } catch (e: Throwable) {
+            java.util.Base64.getEncoder().encodeToString(part3)
+        }.replace(Regex("[\\\\/+=]"), "")
+
+        return "zzc$part1$b64$part2".lowercase()
+    }
+
+    /**
+     * PC 客户端版 searchid：32 位大写十六进制 GUID + 5 位补零随机数 = 37 字符
+     */
+    fun getSearchId(): String {
+        val hexChars = "0123456789ABCDEF"
+        val sb = StringBuilder(37)
+        val rnd = java.util.Random()
+        for (i in 0 until 32) {
+            sb.append(hexChars[rnd.nextInt(16)])
+        }
+        val rand5 = rnd.nextInt(100000).toString().padStart(5, '0')
+        sb.append(rand5)
+        return sb.toString()
     }
 }
 
