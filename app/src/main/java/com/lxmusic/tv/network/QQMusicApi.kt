@@ -176,21 +176,74 @@ class QQMusicApi(
     }
 
     /**
-     * 获取歌词（2.8 增加翻译：接口返回含 trans 字段，构造统一 JSON {lyric, tlyric} 供解析）
+     * 获取原文及翻译。PlayLyricInfo 使用数字 songID，先通过歌曲详情解析 songMid。
+     * crypt=0、qrc=0 返回 Base64 编码的普通 LRC，无需 QRC 解密。
+     * 旧接口通常只有原文，仅作为新接口失败时的兜底。
      * @param songMid QQ音乐歌曲mid
      * @return JSON 字符串 {lyric, tlyric}（洛雪歌词协议字段名）；失败返回 null
      */
     suspend fun getLyric(songMid: String): String? = withContext(Dispatchers.IO) {
         try {
-            // 老版歌词接口（实测可用，nobase64=1 直接返回明文 LRC，lyric + trans 翻译字段）
-            // musicu.fcg 的 GetPlaySongLyric 已失效（返回 code=500003）
+            val detailRequest = JSONObject().apply {
+                put("comm", JSONObject().put("ct", "19").put("cv", "1859").put("uin", "0"))
+                put("req", JSONObject().apply {
+                    put("module", "music.pf_song_detail_svr")
+                    put("method", "get_song_detail_yqq")
+                    put("param", JSONObject().put("song_type", 0).put("song_mid", songMid))
+                })
+            }
+            val detailResponse = httpClient.post(PLAY_URL, detailRequest.toString(), headers = QQ_HEADERS)
+            if (detailResponse.isSuccess) {
+                val detail = parseToObj(detailResponse.body)
+                val req = detail.optJSONObject("req")
+                val songId = req?.optJSONObject("data")?.optJSONObject("track_info")?.optLong("id", 0) ?: 0
+                if (detail.optInt("code", -1) == 0 && req?.optInt("code", -1) == 0 && songId > 0) {
+                    val lyricRequest = JSONObject().apply {
+                        put("comm", JSONObject().put("ct", "19").put("cv", "1859").put("uin", "0"))
+                        put("req", JSONObject().apply {
+                            put("module", "music.musichallSong.PlayLyricInfo")
+                            put("method", "GetPlayLyricInfo")
+                            put("param", JSONObject().apply {
+                                put("format", "json")
+                                put("crypt", 0)
+                                put("ct", 19)
+                                put("cv", 1873)
+                                put("interval", 0)
+                                put("lrc_t", 0)
+                                put("qrc", 0)
+                                put("qrc_t", 0)
+                                put("roma", 0)
+                                put("roma_t", 0)
+                                put("songID", songId)
+                                put("trans", 1)
+                                put("trans_t", 0)
+                                put("type", -1)
+                            })
+                        })
+                    }
+                    val response = httpClient.post(PLAY_URL, lyricRequest.toString(), headers = QQ_HEADERS)
+                    if (response.isSuccess) {
+                        QQMusicLyricResponse.parse(response.body)?.let { return@withContext it }
+                    }
+                }
+            }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "获取翻译歌词失败，尝试旧接口: ${e.message}")
+        }
+        getLegacyLyric(songMid)
+    }
+
+    private suspend fun getLegacyLyric(songMid: String): String? {
+        try {
             val url = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg" +
-                    "?songmid=$songMid&format=json&nobase64=1"
+                    "?songmid=${URLEncoder.encode(songMid, "UTF-8")}&format=json&nobase64=1"
 
             val response = httpClient.get(url, headers = QQ_HEADERS)
-            if (response.isSuccess) {
+            return if (response.isSuccess) {
                 val json = parseToObj(response.body)
-                if (json.optInt("retcode", -1) == 0) {
+                if (json.optInt("retcode", -1) == 0 && !json.optStr("lyric").isNullOrBlank()) {
                     val lyric = json.optStr("lyric").orEmpty()
                     val trans = json.optStr("trans").orEmpty()
                     // 构造统一 JSON（构造请求体用 org.json，无重复 key 安全）
@@ -204,9 +257,11 @@ class QQMusicApi(
             } else {
                 null
             }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "获取歌词失败", e)
-            null
+            return null
         }
     }
 

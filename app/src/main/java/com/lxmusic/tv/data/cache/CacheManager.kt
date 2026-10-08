@@ -69,7 +69,11 @@ object CacheManager {
     }
 
     /** 歌词缓存 key（平台+歌曲id） */
-    private fun lyricKey(song: Song): String = md5("${song.platform.key}|${song.id}")
+    private fun lyricKey(song: Song): String {
+        // QQ 旧接口缓存没有翻译，切换接口后使用新 key 重新获取原文及翻译。
+        val version = if (song.platform == MusicPlatform.TX) "|translation-v2" else ""
+        return md5("${song.platform.key}|${song.id}$version")
+    }
 
     /**
      * 音频缓存 key（歌曲维度：平台+歌曲id+音质，与 URL 无关）。
