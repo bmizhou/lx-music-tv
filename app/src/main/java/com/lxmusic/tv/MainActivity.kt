@@ -131,7 +131,13 @@ fun LXMusicApp() {
     // 多源切换时「A失败→切B」「正在尝试B」「B失败→切D」…完整提示链用户都能看到。
     //（旧实现是替换式：A 失败 toast 刚设置就被「正在尝试B」覆盖，用户永远看不到失败提示）
     val toastMessage by viewModel.toastMessage.collectAsState()
-    val toast = remember { arrayOfNulls<Toast>(1) }
+    // 2.9 修复海信电视打开 HTTP 服务器闪退：
+    // 旧实现在 remember 里缓存单个 Toast 实例并反复 setText()+show() 复用。
+    // AOSP 允许复用，但部分定制 ROM（实测海信 VIDAA，Android 11）会在 Toast 首次
+    // show() 结束后回收内部 mNextView，再次 setText() 即抛
+    // RuntimeException("setView must have been called")，而该异常发生在协程里
+    // 未捕获 → 直接终结进程，表现为「一开 HTTP 服务器就闪退」。
+    // 因此不再缓存，每条提示都新建 Toast（官方推荐用法，无跨 ROM 风险）。
     val toastQueue = remember { mutableStateListOf<String>() }
     LaunchedEffect(toastMessage) {
         toastMessage?.let {
@@ -148,9 +154,13 @@ fun LXMusicApp() {
                 continue
             }
             val msg = toastQueue.removeAt(0)
-            val t = toast[0] ?: Toast.makeText(context, msg, Toast.LENGTH_SHORT).also { toast[0] = it }
-            t.setText(msg)
-            t.show()
+            // 每条提示都新建 Toast 实例（不复用），并用 runCatching 兜底：
+            // 极端 ROM 定制行为最多丢一条提示，绝不因 Toast 异常杀进程
+            runCatching {
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            }.onFailure { e: Throwable ->
+                android.util.Log.w("LXMusicTV", "Toast 显示失败: $msg", e)
+            }
             // 等当前提示显示完再取下一条（Toast LENGTH_SHORT ≈ 2s）
             delay(2200)
         }

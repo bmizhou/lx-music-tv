@@ -14,8 +14,8 @@ android {
         applicationId = "com.lxmusic.tv"
         minSdk = 23
         targetSdk = 37
-        versionCode = 267
-        versionName = "2.9.202610082108"
+        versionCode = 268
+        versionName = "2.9.202610241701"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -35,15 +35,12 @@ android {
                 enable = true // Enables code and resource optimizations.
             }
 
-            // ✅ 使用旧版 DSL 显式开启混淆和资源压缩
-//            isMinifyEnabled = true
-//            isShrinkResources = true
-//
-//            // ✅ 显式引入你原来的 proguard 规则文件（注意要用 proguard-android-optimize.txt）
-//            proguardFiles(
-//                getDefaultProguardFile("proguard-android-optimize.txt"),
-//                "proguard-rules.pro"
-//            )
+
+            // ✅ 显式引入你原来的 proguard 规则文件（注意要用 proguard-android-optimize.txt）
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 
