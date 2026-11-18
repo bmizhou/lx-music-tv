@@ -4,15 +4,22 @@ import android.content.Context
 import android.util.Log
 import com.lxmusic.tv.data.model.*
 import com.lxmusic.tv.data.storage.DataStoreManager
+import com.lxmusic.tv.network.HttpClient
 import com.lxmusic.tv.script.JavaScriptEngine
 import com.lxmusic.tv.script.SourceExecutor
 import com.lxmusic.tv.script.JavaScriptResult
 import com.lxmusic.tv.script.SourceExecutionResult
 import com.lxmusic.tv.service.http.SourceManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -30,6 +37,10 @@ class SourceManagerImpl(
     private val sources = CopyOnWriteArrayList<MusicSource>()
     private val parser = ScriptParser()
     private var enabledSourceId: String? = null
+    private val remoteHttpClient = HttpClient()
+    // 远程自动更新轮询任务的独立作用域，release() 时取消，避免泄漏
+    private val remoteUpdateScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var remoteUpdateJob: Job? = null
 
     // JavaScript引擎和源执行器
     private var javaScriptEngine: JavaScriptEngine? = null
@@ -61,6 +72,36 @@ class SourceManagerImpl(
         if (enabled != null && currentScriptContent == null) {
             val loadResult = loadAndExecuteSource(enabled.id)
             Log.i(TAG, "启动时自动加载播放源: ${enabled.name} -> ${if (loadResult is SourceExecutionResult.Success) "成功" else "失败: ${(loadResult as? SourceExecutionResult.Error)?.message}"}")
+        }
+
+        startRemoteAutoUpdateLoop()
+    }
+
+    /**
+     * 远程源自动更新：仅在 App 每次启动（init）时触发一次，强制刷新所有配置了
+     * remoteUrl 的源（不做周期轮询，不判断是否到期）。拉取失败只记录错误、
+     * 保留旧脚本内容（见 refreshRemoteSource）。
+     */
+    private fun startRemoteAutoUpdateLoop() {
+        remoteUpdateJob?.cancel()
+        remoteUpdateJob = remoteUpdateScope.launch {
+            try {
+                refreshAllRemoteSources()
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "App启动时远程播放源强制刷新异常: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
+     * 强制刷新所有配置了 remoteUrl 的源（忽略是否到期），用于 App 启动时。
+     */
+    private suspend fun refreshAllRemoteSources() {
+        val targets = sources.filter { !it.remoteUrl.isNullOrBlank() }
+        for (source in targets) {
+            refreshRemoteSource(source.id)
         }
     }
 
@@ -203,8 +244,13 @@ class SourceManagerImpl(
 
     /**
      * 从JS脚本创建播放源
+     * @param remoteUrl 非空时标记该源为远程自动更新源（见 refreshRemoteSource）
      */
-    fun createSourceFromScript(scriptContent: String): MusicSource? {
+    fun createSourceFromScript(
+        scriptContent: String,
+        remoteUrl: String? = null,
+        remoteUpdateIntervalMinutes: Int = 360
+    ): MusicSource? {
         val parseResult = parser.parse(scriptContent)
         return when (parseResult) {
             is ParseResult.Success -> {
@@ -215,7 +261,10 @@ class SourceManagerImpl(
                     version = parseResult.metadata.version,
                     author = parseResult.metadata.author,
                     homepage = parseResult.metadata.homepage,
-                    scriptContent = scriptContent
+                    scriptContent = scriptContent,
+                    remoteUrl = remoteUrl,
+                    remoteUpdateIntervalMinutes = remoteUpdateIntervalMinutes,
+                    lastRemoteUpdateAt = if (remoteUrl != null) System.currentTimeMillis() else null
                 )
             }
             is ParseResult.Error -> {
@@ -224,6 +273,124 @@ class SourceManagerImpl(
                 null
             }
         }
+    }
+
+    /**
+     * 将网络层的失败响应转换为可读的错误文案：
+     * code == -1 时是连接/解析异常（DNS 失败、超时等），message 里带了具体原因；
+     * 其余情况是服务端返回的 HTTP 状态码。
+     */
+    private fun describeDownloadFailure(resp: com.lxmusic.tv.network.HttpResponse): String {
+        return if (resp.code == -1) {
+            "下载失败: ${resp.message.ifBlank { "无法连接到服务器" }}"
+        } else {
+            "下载失败: HTTP ${resp.code}"
+        }
+    }
+
+    /**
+     * 新增一个远程自动更新播放源：立即从 url 拉取一次脚本并保存，之后由后台轮询周期刷新。
+     */
+    suspend fun addRemoteSource(url: String, intervalMinutes: Int = 360): RemoteUpdateResult {
+        val content = try {
+            val resp = remoteHttpClient.get(url)
+            if (!resp.isSuccess || resp.body.isBlank()) {
+                return RemoteUpdateResult.Error(describeDownloadFailure(resp))
+            }
+            resp.body
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return RemoteUpdateResult.Error("下载失败: ${e.message}")
+        }
+
+        val source = createSourceFromScript(content, remoteUrl = url, remoteUpdateIntervalMinutes = intervalMinutes)
+            ?: return RemoteUpdateResult.Error("解析失败: 脚本格式不正确")
+
+        return if (addSource(source)) {
+            RemoteUpdateResult.Success("远程播放源 '${source.name}' 添加成功")
+        } else {
+            RemoteUpdateResult.Error("保存播放源失败")
+        }
+    }
+
+    /**
+     * 将已存在的播放源关联到一个远程地址（后台会周期拉取更新）；url 传 null 解除关联。
+     */
+    fun setSourceRemote(id: String, url: String?, intervalMinutes: Int = 360): Boolean {
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return false
+        val now = System.currentTimeMillis()
+        val updated = sources[index].copy(
+            remoteUrl = url?.takeIf { it.isNotBlank() },
+            remoteUpdateIntervalMinutes = intervalMinutes,
+            // 清空关联时一起清空上次更新时间；重新关联时不立即当作"已更新"，让下一轮轮询真正拉取
+            lastRemoteUpdateAt = if (url.isNullOrBlank()) null else sources[index].lastRemoteUpdateAt,
+            lastRemoteUpdateError = null,
+            updatedAt = now
+        )
+        sources[index] = updated
+        kotlinx.coroutines.runBlocking {
+            dataStoreManager?.updateSource(updated)
+        }
+        _sourcesFlow.value = sources.toList()
+        return true
+    }
+
+    /**
+     * 立即刷新一个远程源：成功则覆盖 scriptContent 并清空错误；
+     * 失败（网络错误或解析失败）时保留旧脚本内容不变，只记录 lastRemoteUpdateError。
+     */
+    suspend fun refreshRemoteSource(id: String): RemoteUpdateResult {
+        val source = getSourceById(id) ?: return RemoteUpdateResult.Error("播放源不存在")
+        val url = source.remoteUrl
+        if (url.isNullOrBlank()) return RemoteUpdateResult.Error("该播放源未配置远程地址")
+
+        val now = System.currentTimeMillis()
+        val result = try {
+            val resp = remoteHttpClient.get(url)
+            if (!resp.isSuccess || resp.body.isBlank()) {
+                RemoteUpdateResult.Error(describeDownloadFailure(resp))
+            } else {
+                when (val parsed = parser.parse(resp.body)) {
+                    is ParseResult.Success -> {
+                        updateSource(id) {
+                            it.copy(
+                                name = parsed.metadata.name,
+                                description = parsed.metadata.description,
+                                version = parsed.metadata.version,
+                                author = parsed.metadata.author,
+                                homepage = parsed.metadata.homepage,
+                                scriptContent = resp.body,
+                                lastRemoteUpdateAt = now,
+                                lastRemoteUpdateError = null
+                            )
+                        }
+                        RemoteUpdateResult.Success("播放源 '${parsed.metadata.name}' 已更新")
+                    }
+                    is ParseResult.Error -> RemoteUpdateResult.Error("解析失败: ${parsed.message}")
+                }
+            }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            RemoteUpdateResult.Error("下载失败: ${e.message}")
+        }
+
+        if (result is RemoteUpdateResult.Error) {
+            // 失败：只打时间戳+错误信息，不动 scriptContent（继续用旧脚本，即"更新失败使用旧的"）
+            Log.w(TAG, "远程播放源刷新失败 id=$id url=$url: ${result.message}")
+            updateSource(id) { it.copy(lastRemoteUpdateAt = now, lastRemoteUpdateError = result.message) }
+        }
+        return result
+    }
+
+    /**
+     * 远程更新结果
+     */
+    sealed class RemoteUpdateResult {
+        data class Success(val message: String) : RemoteUpdateResult()
+        data class Error(val message: String) : RemoteUpdateResult()
     }
 
     /**
@@ -484,10 +651,46 @@ class SourceManagerImpl(
      * 释放资源
      */
     fun release() {
+        remoteUpdateJob?.cancel()
         sourceExecutor?.release()
         javaScriptEngine?.release()
         sourceExecutor = null
         javaScriptEngine = null
         currentScriptContent = null
+    }
+
+    // ========== 供 HttpServer（非挂起上下文）调用的阻塞包装 ==========
+    // HttpServer 的请求处理方法是同步的 Response 返回值，风格上与本类里其它用
+    // kotlinx.coroutines.runBlocking 包装 DB 写入的方法一致（如 addSource/deleteSource）。
+
+    /**
+     * 获取播放源的远程地址（供 Web 管理页展示）
+     */
+    override fun getSourceRemoteUrl(id: String): String? = getSourceById(id)?.remoteUrl
+
+    /**
+     * 设置/解除播放源的远程自动更新地址
+     */
+    override fun setSourceRemoteUrl(id: String, url: String?, intervalMinutes: Int): Boolean =
+        setSourceRemote(id, url, intervalMinutes)
+
+    /**
+     * 立即刷新一个远程源（阻塞直到完成），返回 (是否成功, 提示信息)
+     */
+    override fun refreshRemoteSourceBlocking(id: String): Pair<Boolean, String> = runBlocking {
+        when (val result = refreshRemoteSource(id)) {
+            is RemoteUpdateResult.Success -> true to result.message
+            is RemoteUpdateResult.Error -> false to result.message
+        }
+    }
+
+    /**
+     * 新增远程自动更新播放源（阻塞直到首次拉取完成），返回 (是否成功, 提示信息)
+     */
+    override fun addRemoteSourceBlocking(url: String, intervalMinutes: Int): Pair<Boolean, String> = runBlocking {
+        when (val result = addRemoteSource(url, intervalMinutes)) {
+            is RemoteUpdateResult.Success -> true to result.message
+            is RemoteUpdateResult.Error -> false to result.message
+        }
     }
 }

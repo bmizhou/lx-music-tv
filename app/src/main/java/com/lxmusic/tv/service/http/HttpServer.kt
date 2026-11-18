@@ -110,6 +110,10 @@ class HttpServer(
             uri == "/api/sources/enable" && method == Method.POST -> handleSourceEnable(session)
             uri == "/api/sources/platforms" && method == Method.GET -> handleGetSourcePlatforms(params)
             uri == "/api/sources/platforms" && method == Method.POST -> handleSetSourcePlatforms(session)
+            // 2.9 远程自动更新：添加远程源 / 关联或解除已有源的远程地址 / 立即刷新一次
+            uri == "/api/sources/remote/add" && method == Method.POST -> handleAddRemoteSource(session)
+            uri == "/api/sources/remote/set" && method == Method.POST -> handleSetSourceRemote(session)
+            uri == "/api/sources/remote/refresh" && method == Method.POST -> handleRefreshRemoteSource(session)
             // Web 端添加收藏歌单（输入歌单链接）
             uri == "/api/playlists/add" && method == Method.POST -> handleAddPlaylist(session)
             // 2.8 Web 端扫码推送搜索文字（/search 页提交）→ 推送到 TV 搜索输入框
@@ -276,6 +280,19 @@ class HttpServer(
                     </div>
 
                     <div class="card">
+                        <h2 style="margin-bottom: 20px;">添加远程自动更新播放源</h2>
+                        <p style="color: #888; margin-bottom: 15px; font-size: 0.9em;">
+                            填入一个指向洛雪 JS 播放源文件的直链地址，TV 端会立即拉取一次并保存；
+                            之后每次打开 App 会自动在后台重新拉取覆盖，拉取或解析失败时继续使用上一次成功的内容。
+                        </p>
+                        <div class="playlist-add-row">
+                            <input type="text" id="remote-url" class="text-input"
+                                placeholder="例如: https://example.com/my-source.js">
+                            <button class="btn btn-primary" onclick="addRemoteSource()" style="white-space: nowrap;">添加</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
                         <h2 style="margin-bottom: 20px;">上传播放源</h2>
                         <div class="upload-area" id="upload-area">
                             <div class="upload-icon">文件</div>
@@ -336,6 +353,24 @@ class HttpServer(
                     </div>
                 </div>
 
+                <!-- 远程自动更新配置弹窗 -->
+                <div class="modal-overlay" id="remote-modal">
+                    <div class="modal">
+                        <h3>远程自动更新</h3>
+                        <div class="modal-sub" id="remote-modal-source"></div>
+                        <div class="modal-sub">留空地址并保存 = 解除自动更新（保留当前脚本内容）</div>
+                        <div style="margin: 14px 0;">
+                            <input type="text" id="remote-modal-url" class="text-input" style="width: 100%; box-sizing: border-box;"
+                                placeholder="https://example.com/my-source.js">
+                        </div>
+                        <div class="modal-sub" id="remote-modal-status"></div>
+                        <div class="modal-actions">
+                            <button class="btn btn-secondary" onclick="closeRemoteModal()">取消</button>
+                            <button class="btn btn-primary" onclick="saveRemoteSource()">保存</button>
+                        </div>
+                    </div>
+                </div>
+
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
                         loadSources();
@@ -381,6 +416,15 @@ class HttpServer(
                                     } else {
                                         platformTags = '<span class="platform-tag">全部平台</span>';
                                     }
+                                    var remoteInfo = '';
+                                    if (s.remoteUrl) {
+                                        var lastText = s.lastRemoteUpdateAt
+                                            ? new Date(s.lastRemoteUpdateAt).toLocaleString() : '尚未更新';
+                                        remoteInfo = '<div class="source-meta" style="margin-top: 4px;">' +
+                                            '远程自动更新: 每次启动 App 更新，上次: ' + lastText +
+                                            (s.lastRemoteUpdateError ? ' <span style="color:#e74c3c;">(上次失败: ' + escapeAttr(s.lastRemoteUpdateError) + ')</span>' : '') +
+                                            '</div>';
+                                    }
                                     return '<li class="source-item">' +
                                         '<div class="source-info">' +
                                         '<div class="source-name">' + s.name + '</div>' +
@@ -390,10 +434,14 @@ class HttpServer(
                                         (s.author ? ' by ' + s.author : '') +
                                         '</div>' +
                                         '<div style="margin-top: 6px;">' + platformTags + '</div>' +
+                                        remoteInfo +
                                         '</div>' +
                                         '<div class="source-actions">' +
                                         '<button class="btn btn-platform" data-action="platform" data-id="' + s.id + '" ' +
                                         'data-name="' + escapeAttr(s.name) + '" data-platforms="' + escapeAttr(JSON.stringify(s.platforms || [])) + '">平台</button>' +
+                                        '<button class="btn btn-platform" data-action="remote" data-id="' + s.id + '" ' +
+                                        'data-name="' + escapeAttr(s.name) + '" data-url="' + escapeAttr(s.remoteUrl || '') + '">远程</button>' +
+                                        (s.remoteUrl ? '<button class="btn btn-secondary" data-action="remote-refresh" data-id="' + s.id + '">立即更新</button>' : '') +
                                         '<button class="btn ' + (s.isEnabled ? 'btn-secondary' : 'btn-primary') + '" ' +
                                         'data-action="toggle" data-id="' + s.id + '" data-enable="' + (!s.isEnabled) + '">' +
                                         (s.isEnabled ? '已启用' : '启用') + '</button>' +
@@ -476,6 +524,10 @@ class HttpServer(
                             var platforms = [];
                             try { platforms = JSON.parse(btn.getAttribute('data-platforms') || '[]'); } catch (err) {}
                             openPlatformModal(id, btn.getAttribute('data-name') || '', platforms);
+                        } else if (action === 'remote') {
+                            openRemoteModal(id, btn.getAttribute('data-name') || '', btn.getAttribute('data-url') || '');
+                        } else if (action === 'remote-refresh') {
+                            refreshRemoteNow(id);
                         }
                     });
 
@@ -539,11 +591,84 @@ class HttpServer(
                         } catch (error) { alert('保存失败: ' + error.message); }
                     }
 
+                    // ===== 远程自动更新 =====
+                    var currentRemoteSourceId = null;
+
+                    async function addRemoteSource() {
+                        var url = document.getElementById('remote-url').value.trim();
+                        if (!url) { alert('请输入远程地址'); return; }
+                        try {
+                            var response = await fetch('/api/sources/remote/add', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: 'url=' + encodeURIComponent(url)
+                            });
+                            var result = await response.json();
+                            if (result.success) {
+                                document.getElementById('remote-url').value = '';
+                                alert('添加成功: ' + result.message); loadSources();
+                            } else {
+                                alert('添加失败: ' + result.message);
+                            }
+                        } catch (error) { alert('添加失败: ' + error.message); }
+                    }
+
+                    function openRemoteModal(id, name, url) {
+                        currentRemoteSourceId = id;
+                        document.getElementById('remote-modal-source').textContent = name;
+                        document.getElementById('remote-modal-url').value = url || '';
+                        document.getElementById('remote-modal-status').textContent = '';
+                        document.getElementById('remote-modal').classList.add('show');
+                    }
+
+                    function closeRemoteModal() {
+                        document.getElementById('remote-modal').classList.remove('show');
+                    }
+
+                    async function saveRemoteSource() {
+                        if (!currentRemoteSourceId) return;
+                        var url = document.getElementById('remote-modal-url').value.trim();
+                        var statusEl = document.getElementById('remote-modal-status');
+                        statusEl.textContent = '处理中...';
+                        try {
+                            var response = await fetch('/api/sources/remote/set', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: 'id=' + encodeURIComponent(currentRemoteSourceId) +
+                                      '&url=' + encodeURIComponent(url)
+                            });
+                            var result = await response.json();
+                            if (result.success) {
+                                closeRemoteModal();
+                                loadSources();
+                            } else {
+                                statusEl.textContent = '保存失败: ' + result.message;
+                            }
+                        } catch (error) { statusEl.textContent = '保存失败: ' + error.message; }
+                    }
+
+                    async function refreshRemoteNow(id) {
+                        try {
+                            var response = await fetch('/api/sources/remote/refresh', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: 'id=' + encodeURIComponent(id)
+                            });
+                            var result = await response.json();
+                            alert(result.success ? ('更新成功: ' + result.message) : ('更新失败: ' + result.message));
+                            loadSources();
+                        } catch (error) { alert('更新失败: ' + error.message); }
+                    }
+
                     // 点击遮罩层关闭
                     document.addEventListener('DOMContentLoaded', function() {
                         var overlay = document.getElementById('platform-modal');
                         overlay.addEventListener('click', function(e) {
                             if (e.target === overlay) closePlatformModal();
+                        });
+                        var remoteOverlay = document.getElementById('remote-modal');
+                        remoteOverlay.addEventListener('click', function(e) {
+                            if (e.target === remoteOverlay) closeRemoteModal();
                         });
                     });
 
@@ -606,7 +731,12 @@ class HttpServer(
                 "homepage" to source.homepage,
                 "isEnabled" to source.isEnabled,
                 // 平台配置：空 = 全部平台
-                "platforms" to (sourceManager?.getSourcePlatforms(source.id) ?: emptySet<String>()).toList()
+                "platforms" to (sourceManager?.getSourcePlatforms(source.id) ?: emptySet<String>()).toList(),
+                // 2.9 远程自动更新状态（remoteUrl 为空表示该源未配置自动更新）
+                "remoteUrl" to source.remoteUrl,
+                "remoteUpdateIntervalMinutes" to source.remoteUpdateIntervalMinutes,
+                "lastRemoteUpdateAt" to source.lastRemoteUpdateAt,
+                "lastRemoteUpdateError" to source.lastRemoteUpdateError
             )
         }.let { com.lxmusic.tv.util.JsonUtil.toJson(it) }
 
@@ -733,6 +863,50 @@ class HttpServer(
             Log.w(TAG, "设置平台配置失败: id=$id platforms=$platforms, 结果=$result")
             createErrorResponse("操作失败，播放源不存在")
         }
+    }
+
+    /**
+     * 新增远程自动更新播放源（POST /api/sources/remote/add，body: url=xxx&interval=360）
+     * 立即从 url 拉取一次并保存；interval 单位分钟，缺省 360（6 小时）
+     */
+    private fun handleAddRemoteSource(session: IHTTPSession): Response {
+        val params = parsePostParams(session)
+        val url = params["url"]?.trim()
+        if (url.isNullOrEmpty()) return createErrorResponse("缺少远程地址")
+        val interval = params["interval"]?.toIntOrNull()?.coerceAtLeast(1) ?: 360
+        val (success, message) = sourceManager?.addRemoteSourceBlocking(url, interval)
+            ?: (false to "播放源管理器未初始化")
+        return if (success) createSuccessResponse(message) else createErrorResponse(message)
+    }
+
+    /**
+     * 关联/解除已有播放源的远程地址（POST /api/sources/remote/set，body: id=xxx&url=xxx&interval=360）
+     * url 传空串表示解除关联（之后该源不再自动更新，仍保留当前脚本内容）
+     */
+    private fun handleSetSourceRemote(session: IHTTPSession): Response {
+        val params = parsePostParams(session)
+        val id = params["id"] ?: return createErrorResponse("缺少播放源ID")
+        val url = params["url"]?.trim()
+        val interval = params["interval"]?.toIntOrNull()?.coerceAtLeast(1) ?: 360
+        val result = sourceManager?.setSourceRemoteUrl(id, url, interval)
+        if (result != true) return createErrorResponse("操作失败，播放源不存在")
+        // 新关联了地址时立即拉取一次，让用户马上看到结果，而不是等下一轮轮询
+        if (!url.isNullOrEmpty()) {
+            val (success, message) = sourceManager?.refreshRemoteSourceBlocking(id) ?: (false to "")
+            return if (success) createSuccessResponse("远程地址已保存，$message")
+            else createSuccessResponse("远程地址已保存，首次拉取失败: $message（已保留原脚本，下次启动 App 会自动重试）")
+        }
+        return createSuccessResponse("已解除远程自动更新")
+    }
+
+    /**
+     * 立即刷新一个远程源（POST /api/sources/remote/refresh，body: id=xxx）
+     */
+    private fun handleRefreshRemoteSource(session: IHTTPSession): Response {
+        val params = parsePostParams(session)
+        val id = params["id"] ?: return createErrorResponse("缺少播放源ID")
+        val (success, message) = sourceManager?.refreshRemoteSourceBlocking(id) ?: (false to "播放源管理器未初始化")
+        return if (success) createSuccessResponse(message) else createErrorResponse(message)
     }
 
     /**
@@ -950,6 +1124,20 @@ interface SourceManager {
      * 设置播放源启用的平台 key 集合（空 = 全部平台）
      */
     fun setSourcePlatforms(id: String, platforms: Set<String>): Boolean
+
+    // ========== 远程自动更新（2.9）==========
+
+    /** 获取播放源当前关联的远程地址（未关联返回 null） */
+    fun getSourceRemoteUrl(id: String): String?
+
+    /** 设置/解除播放源的远程自动更新地址；url 传 null 或空串解除关联 */
+    fun setSourceRemoteUrl(id: String, url: String?, intervalMinutes: Int): Boolean
+
+    /** 立即刷新一个远程源（阻塞直到完成），返回 (是否成功, 提示信息) */
+    fun refreshRemoteSourceBlocking(id: String): Pair<Boolean, String>
+
+    /** 新增远程自动更新播放源（阻塞直到首次拉取完成），返回 (是否成功, 提示信息) */
+    fun addRemoteSourceBlocking(url: String, intervalMinutes: Int): Pair<Boolean, String>
 }
 
 /**

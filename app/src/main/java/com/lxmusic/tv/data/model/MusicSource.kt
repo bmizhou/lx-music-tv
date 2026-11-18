@@ -15,7 +15,13 @@ data class MusicSource(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     // 2.8 启用时间（优先级 = 启用顺序）：启用时记录，禁用置 null；旧数据 null 用 updatedAt 兜底
-    val enabledAt: Long? = null
+    val enabledAt: Long? = null,
+    // 远程自动更新：设置后台台会按 remoteUpdateIntervalMinutes 周期从 remoteUrl 拉取最新脚本并覆盖
+    // scriptContent；拉取或解析失败时保留旧脚本不变，仅记录 lastRemoteUpdateError
+    val remoteUrl: String? = null,
+    val remoteUpdateIntervalMinutes: Int = 360,
+    val lastRemoteUpdateAt: Long? = null,
+    val lastRemoteUpdateError: String? = null
 )
 
 /**
