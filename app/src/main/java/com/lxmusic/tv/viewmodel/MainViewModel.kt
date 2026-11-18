@@ -210,6 +210,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // 2.8 是否显示翻译歌词（歌词设置，SharedPreferences 持久化，默认开启）
     private val _lyricTranslationEnabled = MutableStateFlow(true)
     val lyricTranslationEnabled: StateFlow<Boolean> = _lyricTranslationEnabled.asStateFlow()
+    // 播放页歌词展示风格（设置页可选，SharedPreferences 持久化，默认经典布局）
+    private val _playerLyricStyle = MutableStateFlow(PlayerLyricStyle.CLASSIC)
+    val playerLyricStyle: StateFlow<PlayerLyricStyle> = _playerLyricStyle.asStateFlow()
     // 2.8 当前实际播放音质（getMusicUrl 降级重试成功后记录的真实音质，非设置里的偏好音质）
     private val _currentPlayQuality = MutableStateFlow<AudioQuality?>(null)
     val currentPlayQuality: StateFlow<AudioQuality?> = _currentPlayQuality.asStateFlow()
@@ -304,6 +307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // 2.8 读取「显示翻译歌词」开关（歌词设置，默认开启）
         _lyricTranslationEnabled.value = loadLyricTranslationEnabled()
+        _playerLyricStyle.value = loadPlayerLyricStyle()
 
         // 2.9 读取启动默认页面（侧栏 Tab）
         _defaultStartupTab.value = loadDefaultStartupTab()
@@ -902,6 +906,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .getBoolean("lyric_translation_enabled", true)
         } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             true
+        }
+    }
+
+    /**
+     * 设置播放页歌词展示风格（设置页），持久化到 SharedPreferences
+     */
+    fun setPlayerLyricStyle(style: PlayerLyricStyle) {
+        _playerLyricStyle.value = style
+        try {
+            app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putString("player_lyric_style", style.name)
+                .apply()
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+            Log.e("LX-MainViewModel", "保存播放页歌词风格失败: ${e.message}")
+        }
+    }
+
+    private fun loadPlayerLyricStyle(): PlayerLyricStyle {
+        return try {
+            val name = app.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .getString("player_lyric_style", PlayerLyricStyle.CLASSIC.name) ?: PlayerLyricStyle.CLASSIC.name
+            PlayerLyricStyle.valueOf(name)
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
+            PlayerLyricStyle.CLASSIC
         }
     }
 

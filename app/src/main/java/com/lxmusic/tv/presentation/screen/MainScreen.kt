@@ -65,6 +65,7 @@ import com.lxmusic.tv.data.model.BrowseItem
 import com.lxmusic.tv.data.model.BrowseType
 import com.lxmusic.tv.data.model.Favorite
 import com.lxmusic.tv.data.model.MusicPlatform
+import com.lxmusic.tv.data.model.PlayerLyricStyle
 import com.lxmusic.tv.data.model.SearchType
 import com.lxmusic.tv.data.model.Song
 import com.lxmusic.tv.presentation.component.RemoteImage
@@ -118,6 +119,9 @@ fun MainScreen(
     // 2.8 歌词设置：是否显示翻译歌词
     lyricTranslationEnabled: Boolean = true,
     onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
+    // 播放页歌词展示风格
+    playerLyricStyle: PlayerLyricStyle = PlayerLyricStyle.CLASSIC,
+    onPlayerLyricStyleChange: (PlayerLyricStyle) -> Unit = {},
     browseItems: List<BrowseItem> = emptyList(),
     browseSongs: List<Song> = emptyList(),
     browseLoading: Boolean = false,
@@ -317,6 +321,8 @@ fun MainScreen(
                 // 2.8 歌词设置
                 lyricTranslationEnabled = lyricTranslationEnabled,
                 onLyricTranslationEnabledChange = onLyricTranslationEnabledChange,
+                playerLyricStyle = playerLyricStyle,
+                onPlayerLyricStyleChange = onPlayerLyricStyleChange,
                 browseItems = browseItems,
                 browseSongs = browseSongs,
                 browseLoading = browseLoading,
@@ -789,6 +795,9 @@ fun MainContent(
     // 2.8 歌词设置：是否显示翻译歌词
     lyricTranslationEnabled: Boolean = true,
     onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
+    // 播放页歌词展示风格
+    playerLyricStyle: PlayerLyricStyle = PlayerLyricStyle.CLASSIC,
+    onPlayerLyricStyleChange: (PlayerLyricStyle) -> Unit = {},
     browseItems: List<BrowseItem> = emptyList(),
     browseSongs: List<Song> = emptyList(),
     browseLoading: Boolean = false,
@@ -960,6 +969,8 @@ fun MainContent(
                 // 2.8 歌词设置
                 lyricTranslationEnabled = lyricTranslationEnabled,
                 onLyricTranslationEnabledChange = onLyricTranslationEnabledChange,
+                playerLyricStyle = playerLyricStyle,
+                onPlayerLyricStyleChange = onPlayerLyricStyleChange,
                 // 2.9 启动默认页面
                 defaultStartupTab = defaultStartupTab,
                 onDefaultStartupTabChange = onDefaultStartupTabChange,
@@ -1882,6 +1893,9 @@ fun SettingsScreen(
     // 2.8 歌词设置：是否显示翻译歌词
     lyricTranslationEnabled: Boolean = true,
     onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
+    // 播放页歌词展示风格
+    playerLyricStyle: PlayerLyricStyle = PlayerLyricStyle.CLASSIC,
+    onPlayerLyricStyleChange: (PlayerLyricStyle) -> Unit = {},
     // 2.9 启动默认页面设置（侧栏 Tab 索引：0搜索/1歌单/2排行/3收藏/4本地/5设置），默认选择歌单(1)
     defaultStartupTab: Int = 1,
     onDefaultStartupTabChange: (Int) -> Unit = {},
@@ -1903,6 +1917,8 @@ fun SettingsScreen(
     var showStartupTabDialog by remember { mutableStateOf(false) }
     // 2.8 歌词设置弹窗
     var showLyricsDialog by remember { mutableStateOf(false) }
+    // 播放页风格选择弹窗
+    var showPlayerStyleDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     // 2.9 设备信息弹窗
     var showDeviceInfoDialog by remember { mutableStateOf(false) }
@@ -1926,8 +1942,8 @@ fun SettingsScreen(
 
     // 进入子路由前点击的设置项索引（rememberSaveable：从子路由返回重新组合后仍可恢复）
     var lastClickedIndex by rememberSaveable { mutableIntStateOf(-1) }
-    // 各设置项的焦点请求器（共 10 项：默认音乐平台/播放源管理/启动默认页面/播放设置/歌词设置/界面设置/缓存管理/异常日志/设备信息/关于）
-    val itemRequesters = remember { List(10) { FocusRequester() } }
+    // 各设置项的焦点请求器（共 11 项：默认音乐平台/播放源管理/启动默认页面/播放设置/歌词设置/播放页风格/界面设置/缓存管理/异常日志/设备信息/关于）
+    val itemRequesters = remember { List(11) { FocusRequester() } }
 
     // 重复点击「设置」tab：滚动回顶部（仅 tick 真正变化时，避免组件重建误触发）
     var lastRefreshTick by remember { mutableIntStateOf(refreshTick) }
@@ -1943,7 +1959,7 @@ fun SettingsScreen(
     LaunchedEffect(restoreTick) {
         if (restoreTick > 0 && restoreTick != lastRestoreTick) {
             lastRestoreTick = restoreTick
-            if (lastClickedIndex in 0..9) {
+            if (lastClickedIndex in 0..10) {
                 itemRequesters[lastClickedIndex].requestFocus()
             }
         }
@@ -2018,15 +2034,24 @@ fun SettingsScreen(
             )
 
             SettingsItem(
+                title = "播放页风格",
+                subtitle = "切换播放页歌词展示风格（当前：${playerLyricStyle.displayName}）",
+                icon = Icons.Default.Animation,
+                onClick = { showPlayerStyleDialog = true },
+                extraFocusRequester = itemRequesters[5],
+                onExitToNav = onExitToNav
+            )
+
+            SettingsItem(
                 title = "界面设置",
                 subtitle = "主题模式、主题色等界面相关设置",
                 icon = Icons.Default.Palette,
                 onClick = {
                     // 记录点击项：从子路由返回时恢复焦点到本卡片
-                    lastClickedIndex = 5
+                    lastClickedIndex = 6
                     onNavigateToInterfaceSettings()
                 },
-                extraFocusRequester = itemRequesters[5],
+                extraFocusRequester = itemRequesters[6],
                 onExitToNav = onExitToNav
             )
 
@@ -2036,10 +2061,10 @@ fun SettingsScreen(
                 icon = Icons.Default.Storage,
                 onClick = {
                     // 2.8 改为独立子页面；记录点击项：从子路由返回时恢复焦点到本卡片
-                    lastClickedIndex = 6
+                    lastClickedIndex = 7
                     onNavigateToCacheManage()
                 },
-                extraFocusRequester = itemRequesters[6],
+                extraFocusRequester = itemRequesters[7],
                 onExitToNav = onExitToNav
             )
 
@@ -2056,7 +2081,7 @@ fun SettingsScreen(
                         showEnableServerDialog = true
                     }
                 },
-                extraFocusRequester = itemRequesters[7],
+                extraFocusRequester = itemRequesters[8],
                 onExitToNav = onExitToNav
             )
 
@@ -2066,7 +2091,7 @@ fun SettingsScreen(
                 subtitle = "查看设备型号、屏幕分辨率、系统版本及显示参数",
                 icon = Icons.Default.Tv,
                 onClick = { showDeviceInfoDialog = true },
-                extraFocusRequester = itemRequesters[8],
+                extraFocusRequester = itemRequesters[9],
                 onExitToNav = onExitToNav
             )
 
@@ -2075,7 +2100,7 @@ fun SettingsScreen(
                 subtitle = "版本号、说明等",
                 icon = Icons.Default.Info,
                 onClick = { showAboutDialog = true },
-                extraFocusRequester = itemRequesters[9],
+                extraFocusRequester = itemRequesters[10],
                 onExitToNav = onExitToNav
             )
         }
@@ -2123,6 +2148,18 @@ fun SettingsScreen(
             translationEnabled = lyricTranslationEnabled,
             onTranslationEnabledChange = onLyricTranslationEnabledChange,
             onDismiss = { showLyricsDialog = false }
+        )
+    }
+
+    // 播放页风格选择对话框（电视遥控器友好）
+    if (showPlayerStyleDialog) {
+        PlayerStyleSelectDialog(
+            currentStyle = playerLyricStyle,
+            onSelect = { style ->
+                onPlayerLyricStyleChange(style)
+                showPlayerStyleDialog = false
+            },
+            onDismiss = { showPlayerStyleDialog = false }
         )
     }
 
@@ -3032,8 +3069,93 @@ fun QualitySelectDialog(
 }
 
 /**
- * 平台选择对话框（遥控器方向键 + 确认选择）
+ * 播放页风格选择对话框（遥控器方向键 + 确认选择）：切换播放页歌词展示风格
  */
+@Composable
+fun PlayerStyleSelectDialog(
+    currentStyle: PlayerLyricStyle,
+    onSelect: (PlayerLyricStyle) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val styles = PlayerLyricStyle.values().toList()
+    // 进入对话框时把焦点落到「当前所选项」，而非第一项
+    val selectedIndex = styles.indexOf(currentStyle).coerceAtLeast(0)
+    val selectedRequester = remember { FocusRequester() }
+    var initialFocusRequested by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        requestInitialFocus(
+            focusRequester = selectedRequester,
+            attempted = { initialFocusRequested },
+            markAttempted = { initialFocusRequested = true }
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LXSurfaceDialog,
+        title = {
+            Text(
+                text = "选择播放页风格",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = LXTextPrimary
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                styles.forEachIndexed { index, style ->
+                    val isSelected = style == currentStyle
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(if (index == selectedIndex) Modifier.focusRequester(selectedRequester) else Modifier)
+                            .lxSelectorFocus(shape = RoundedCornerShape(8.dp), glow = false, animated = false)
+                            .clickable { onSelect(style) },
+                        color = if (isSelected) LXPrimary.copy(alpha = 0.12f) else Color.Transparent,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = style.displayName,
+                                    fontSize = 16.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = LXTextPrimary
+                                )
+                                Text(
+                                    text = style.description,
+                                    fontSize = 12.sp,
+                                    color = LXTextSecondary
+                                )
+                            }
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = LXPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = LXTextSecondary)
+            }
+        },
+        modifier = modifier
+    )
+}
+
+
 @Composable
 fun PlatformSelectDialog(
     currentPlatform: MusicPlatform,
