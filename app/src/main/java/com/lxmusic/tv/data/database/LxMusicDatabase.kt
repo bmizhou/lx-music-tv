@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.Flow
         FavoritePlaylistEntity::class,
         CacheItemEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class LxMusicDatabase : RoomDatabase() {
@@ -78,7 +78,18 @@ abstract class LxMusicDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `music_sources` ADD COLUMN `enabledAt` INTEGER")
             }
         }
-        
+
+        // v5 → v6：music_sources 表新增远程自动更新相关列（2.9 支持配置 URL 定时拉取最新播放源脚本，
+        // 失败时保留旧脚本内容不变，仅记录 lastRemoteUpdateError 供排查）
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `music_sources` ADD COLUMN `remoteUrl` TEXT")
+                db.execSQL("ALTER TABLE `music_sources` ADD COLUMN `remoteUpdateIntervalMinutes` INTEGER NOT NULL DEFAULT 360")
+                db.execSQL("ALTER TABLE `music_sources` ADD COLUMN `lastRemoteUpdateAt` INTEGER")
+                db.execSQL("ALTER TABLE `music_sources` ADD COLUMN `lastRemoteUpdateError` TEXT")
+            }
+        }
+
         fun getDatabase(context: Context): LxMusicDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -86,7 +97,7 @@ abstract class LxMusicDatabase : RoomDatabase() {
                     LxMusicDatabase::class.java,
                     "lx_music_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                 INSTANCE = instance
                 instance
@@ -111,7 +122,12 @@ data class MusicSourceEntity(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     // 2.8 启用时间（优先级 = 启用顺序）：启用时记录，禁用置 null；旧数据 null 用 updatedAt 兜底
-    val enabledAt: Long? = null
+    val enabledAt: Long? = null,
+    // 2.9 远程自动更新（见 MusicSource 同名字段说明）
+    val remoteUrl: String? = null,
+    val remoteUpdateIntervalMinutes: Int = 360,
+    val lastRemoteUpdateAt: Long? = null,
+    val lastRemoteUpdateError: String? = null
 )
 
 /**

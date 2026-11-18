@@ -219,7 +219,11 @@ private fun MusicSourceEntity.toDomainModel(): MusicSource {
         isEnabled = isEnabled,
         createdAt = createdAt,
         updatedAt = updatedAt,
-        enabledAt = enabledAt
+        enabledAt = enabledAt,
+        remoteUrl = remoteUrl,
+        remoteUpdateIntervalMinutes = remoteUpdateIntervalMinutes,
+        lastRemoteUpdateAt = lastRemoteUpdateAt,
+        lastRemoteUpdateError = lastRemoteUpdateError
     )
 }
 
@@ -235,7 +239,11 @@ private fun MusicSource.toEntity(): MusicSourceEntity {
         isEnabled = isEnabled,
         createdAt = createdAt,
         updatedAt = updatedAt,
-        enabledAt = enabledAt
+        enabledAt = enabledAt,
+        remoteUrl = remoteUrl,
+        remoteUpdateIntervalMinutes = remoteUpdateIntervalMinutes,
+        lastRemoteUpdateAt = lastRemoteUpdateAt,
+        lastRemoteUpdateError = lastRemoteUpdateError
     )
 }
 
