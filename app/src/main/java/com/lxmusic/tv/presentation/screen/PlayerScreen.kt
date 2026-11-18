@@ -33,6 +33,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
@@ -46,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.AnimatedVisibility
@@ -56,11 +58,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.activity.compose.BackHandler
 import android.widget.Toast
 import com.lxmusic.tv.data.model.AudioQuality
 import com.lxmusic.tv.data.model.MusicPlatform
 import com.lxmusic.tv.data.model.PlayMode
+import com.lxmusic.tv.data.model.PlayerLyricStyle
 import com.lxmusic.tv.data.model.Song
 import com.lxmusic.tv.presentation.component.RemoteImage
 import com.lxmusic.tv.presentation.component.requestInitialFocus
@@ -109,6 +114,9 @@ fun PlayerScreen(
     // 2.8 翻译歌词 + 是否显示开关（设置页歌词设置）
     currentLyricTranslation: String? = null,
     lyricTranslationEnabled: Boolean = true,
+    // 播放页歌词展示风格（设置页可切换，默认经典布局）
+    playerLyricStyle: PlayerLyricStyle = PlayerLyricStyle.CLASSIC,
+    onPlayerLyricStyleChange: (PlayerLyricStyle) -> Unit = {},
     // 2.8 当前实际播放音质（降级重试后的真实音质；null 表示未知/未播放）
     currentPlayQuality: AudioQuality? = null,
     playlist: List<Song> = emptyList(),
@@ -129,6 +137,7 @@ fun PlayerScreen(
     var showControls by remember { mutableStateOf(false) }
     // 播放模式选择弹窗（点击模式按钮弹出，取代「点击循环切换模式」）
     var showPlayModeMenu by remember { mutableStateOf(false) }
+    var showPlayerStyleDialog by remember { mutableStateOf(false) }
     // 自动隐藏计时器：控制栏显示后 5 秒无操作自动收起；任何按键按下都会重置
     var controlsTick by remember { mutableStateOf(0) }
 
@@ -147,6 +156,7 @@ fun PlayerScreen(
     val mainFocusRequester = remember { FocusRequester() }
     val progressFocusRequester = remember { FocusRequester() }
     val playPauseFocusRequester = remember { FocusRequester() }
+    val playerStyleFocusRequester = remember { FocusRequester() }
     var initialFocusRequested by remember { mutableStateOf(false) }
 
     // 初始焦点：落到主内容区（控制栏默认隐藏，不能聚焦隐藏组件）
@@ -168,8 +178,8 @@ fun PlayerScreen(
 
     // 自动隐藏：显示后 5 秒无操作自动收起，并交还焦点给主区
     // （播放模式弹窗打开期间不打断，避免控制栏被收起导致弹窗丢失）
-    LaunchedEffect(showControls, controlsTick, showPlayModeMenu) {
-        if (showControls && !showPlayModeMenu) {
+    LaunchedEffect(showControls, controlsTick, showPlayModeMenu, showPlayerStyleDialog) {
+        if (showControls && !showPlayModeMenu && !showPlayerStyleDialog) {
             delay(5000)
             showControls = false
             mainFocusRequester.requestFocus()
@@ -317,6 +327,8 @@ fun PlayerScreen(
                 currentLyricTranslation = if (lyricTranslationEnabled) currentLyricTranslation else null,
                 // 2.8 实际播放音质
                 currentPlayQuality = currentPlayQuality,
+                playerLyricStyle = playerLyricStyle,
+                isPlaying = isPlaying,
                 progress = progress,
                 totalDurationMs = totalDurationMs,
                 focusRequester = mainFocusRequester,
@@ -344,10 +356,28 @@ fun PlayerScreen(
                     onToggleFavorite = onToggleFavorite,
                     onPlayModeChange = onPlayModeChange,
                     onPlayModeMenuToggle = { showPlayModeMenu = !showPlayModeMenu },
+                    onShowPlayerStyle = { showPlayerStyleDialog = true },
+                    playerStyleFocusRequester = playerStyleFocusRequester,
                     onRequestHide = hideControls,
                     progressFocusRequester = progressFocusRequester,
                     playPauseFocusRequester = playPauseFocusRequester,
                     modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
+
+            if (showPlayerStyleDialog) {
+                val dismissStyleDialog: () -> Unit = {
+                    showPlayerStyleDialog = false
+                    controlsTick++
+                    playerStyleFocusRequester.requestFocus()
+                }
+                PlayerStyleSelectDialog(
+                    currentStyle = playerLyricStyle,
+                    onSelect = {
+                        onPlayerLyricStyleChange(it)
+                        dismissStyleDialog()
+                    },
+                    onDismiss = dismissStyleDialog
                 )
             }
 
@@ -430,6 +460,57 @@ private fun PlayerMainContent(
     currentLyricTranslation: String? = null,
     // 2.8 当前实际播放音质（真实音质，非设置偏好）
     currentPlayQuality: AudioQuality? = null,
+    // 播放页歌词展示风格（设置页可切换，默认经典布局）
+    playerLyricStyle: PlayerLyricStyle = PlayerLyricStyle.CLASSIC,
+    isPlaying: Boolean,
+    progress: Float,
+    totalDurationMs: Long,
+    focusRequester: FocusRequester,
+    modifier: Modifier = Modifier
+) {
+    when (playerLyricStyle) {
+        PlayerLyricStyle.CLASSIC -> PlayerMainContentClassic(
+            currentSong = currentSong,
+            currentLyric = currentLyric,
+            currentLyricTranslation = currentLyricTranslation,
+            currentPlayQuality = currentPlayQuality,
+            progress = progress,
+            totalDurationMs = totalDurationMs,
+            focusRequester = focusRequester,
+            modifier = modifier
+        )
+        PlayerLyricStyle.CENTERED_BIG -> PlayerMainContentCentered(
+            currentSong = currentSong,
+            currentLyric = currentLyric,
+            currentLyricTranslation = currentLyricTranslation,
+            currentPlayQuality = currentPlayQuality,
+            style = playerLyricStyle,
+            progress = progress,
+            totalDurationMs = totalDurationMs,
+            focusRequester = focusRequester,
+            modifier = modifier
+        )
+        PlayerLyricStyle.FLYING -> PlayerMainContentDanmaku(
+            currentSong = currentSong,
+            currentLyric = currentLyric,
+            currentLyricTranslation = currentLyricTranslation,
+            currentPlayQuality = currentPlayQuality,
+            isPlaying = isPlaying,
+            progress = progress,
+            totalDurationMs = totalDurationMs,
+            focusRequester = focusRequester,
+            modifier = modifier
+        )
+    }
+}
+
+/** 经典布局：左侧封面+歌名歌手，右侧滚动歌词（默认，保持原有视觉不变） */
+@Composable
+private fun PlayerMainContentClassic(
+    currentSong: Song?,
+    currentLyric: String?,
+    currentLyricTranslation: String? = null,
+    currentPlayQuality: AudioQuality? = null,
     progress: Float,
     totalDurationMs: Long,
     focusRequester: FocusRequester,
@@ -507,6 +588,233 @@ private fun PlayerMainContent(
 }
 
 /**
+ * 居中风格布局（居中大字歌词 / 卡拉OK逐字高亮）：封面缩小置顶居中，歌词区铺满下方并居中显示，
+ * 沉浸感更强，适合「全屏模式」式的观感。
+ */
+@Composable
+private fun PlayerMainContentCentered(
+    currentSong: Song?,
+    currentLyric: String?,
+    currentLyricTranslation: String? = null,
+    currentPlayQuality: AudioQuality? = null,
+    style: PlayerLyricStyle,
+    progress: Float,
+    totalDurationMs: Long,
+    focusRequester: FocusRequester,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 64.dp)
+            .focusRequester(focusRequester)
+            .focusable(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // 顶部：小封面 + 歌名/歌手横向排列（省出空间给歌词）
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            GlassAlbumCover(
+                currentSong = currentSong,
+                modifier = Modifier.size(72.dp)
+            )
+            Spacer(modifier = Modifier.width(18.dp))
+            Column(horizontalAlignment = Alignment.Start) {
+                Text(
+                    text = currentSong?.name ?: "未在播放",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = currentSong?.singer ?: "选择一首歌开始播放",
+                    fontSize = 14.sp,
+                    color = Color.White.copy(alpha = 0.65f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (currentSong != null) {
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = currentPlayQuality?.let {
+                        when (it) {
+                            AudioQuality.QUALITY_128K -> "标准"
+                            AudioQuality.QUALITY_320K -> "高品质"
+                            AudioQuality.FLAC -> "无损"
+                            AudioQuality.FLAC_24BIT -> "Hi-Res"
+                        }
+                    } ?: "未知",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White.copy(alpha = 0.5f),
+                    letterSpacing = 1.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(28.dp))
+
+        // 歌词区：居中大字滚动 / 卡拉OK当前行逐字扫光
+        LyricPanel(
+            currentSong = currentSong,
+            lyric = currentLyric,
+            translation = currentLyricTranslation,
+            currentTimeMs = (progress * totalDurationMs).toLong(),
+            style = style,
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp)
+        )
+    }
+}
+
+/** 全屏随机位置飞词，保留漂浮光斑和顶部歌曲信息。 */
+@Composable
+private fun PlayerMainContentDanmaku(
+    currentSong: Song?,
+    currentLyric: String?,
+    currentLyricTranslation: String? = null,
+    currentPlayQuality: AudioQuality? = null,
+    isPlaying: Boolean,
+    progress: Float,
+    totalDurationMs: Long,
+    focusRequester: FocusRequester,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier.fillMaxSize().focusRequester(focusRequester).focusable()) {
+        // 本风格专属的漂浮光斑背景（叠加在统一的毛玻璃背景之上，营造"黑夜光点"氛围）
+        FloatingLightDots(modifier = Modifier.fillMaxSize())
+
+        FullScreenFlyingLyrics(
+            lyric = currentLyric,
+            translation = currentLyricTranslation,
+            positionMs = (progress * totalDurationMs).toLong(),
+            totalDurationMs = totalDurationMs,
+            isPlaying = isPlaying
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 56.dp, vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(0.82f),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = currentSong?.name ?: "未在播放",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false).graphicsLayer(rotationZ = -3f)
+                )
+                if (currentSong != null) {
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = currentSong.singer,
+                        fontSize = 13.sp,
+                        color = Color.White.copy(alpha = 0.6f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 180.dp).graphicsLayer(rotationZ = 2f)
+                    )
+                }
+            }
+            currentSong?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = currentPlayQuality?.let { quality ->
+                        when (quality) {
+                            AudioQuality.QUALITY_128K -> "标准 128K"
+                            AudioQuality.QUALITY_320K -> "高品质 320K"
+                            AudioQuality.FLAC -> "无损 flac"
+                            AudioQuality.FLAC_24BIT -> "Hi-Res flac24bit"
+                        }
+                    } ?: "未知",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White.copy(alpha = 0.7f),
+                    modifier = Modifier.graphicsLayer(rotationZ = -2f)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 漂浮光斑背景：若干模糊圆形光点在屏幕内缓慢漂移、呼吸式明暗变化，纯黑底衬托出"黑夜"氛围。
+ * 每个光点的初始位置/大小/相位由固定种子生成，保证每次进入该风格效果一致、不随机跳变。
+ */
+@Composable
+private fun FloatingLightDots(modifier: Modifier = Modifier) {
+    // 固定种子生成一批光点参数（位置比例/相对半径/动画相位），避免每次重组都重新随机导致闪烁
+    val dots = remember {
+        val random = kotlin.random.Random(20240601)
+        List(7) {
+            FloatingDotSpec(
+                xFraction = random.nextFloat(),
+                yFraction = random.nextFloat(),
+                radiusDp = (18 + random.nextInt(46)).dp,
+                phase = random.nextFloat() * 1000f,
+                driftDp = (10 + random.nextInt(18)).dp
+            )
+        }
+    }
+    val infiniteTransition = rememberInfiniteTransition(label = "lightDots")
+    val t by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 12_000, easing = androidx.compose.animation.core.LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "lightDotsPhase"
+    )
+    Box(modifier = modifier) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val widthPx = constraints.maxWidth.toFloat()
+            val heightPx = constraints.maxHeight.toFloat()
+            dots.forEach { spec ->
+                val cycle = (t + spec.phase) % 1f
+                // 上下缓慢漂浮（正弦轨迹）+ 呼吸式透明度变化
+                val driftOffset = kotlin.math.sin(cycle * 2 * Math.PI).toFloat()
+                val alpha = 0.12f + 0.16f * (0.5f + 0.5f * kotlin.math.cos(cycle * 2 * Math.PI).toFloat())
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                x = (spec.xFraction * widthPx).toInt(),
+                                y = (spec.yFraction * heightPx + driftOffset * spec.driftDp.toPx()).toInt()
+                            )
+                        }
+                        .size(spec.radiusDp * 2)
+                        .blur(radius = spec.radiusDp / 2)
+                        .background(Color.White.copy(alpha = alpha), shape = androidx.compose.foundation.shape.CircleShape)
+                )
+            }
+        }
+    }
+}
+
+private data class FloatingDotSpec(
+    val xFraction: Float,
+    val yFraction: Float,
+    val radiusDp: Dp,
+    val phase: Float,
+    val driftDp: Dp
+)
+
+/**
  * 底部控制条（按需弹出）：进度条 + 时间 + 按钮排
  * 对齐菠萝：上进度条，下 [歌单] [⏮ ⏸ ⏭] [收藏 模式]
  * 焦点到按钮排后再按「下」键 → 收起控制栏（onRequestHide，焦点交还主区）
@@ -527,6 +835,8 @@ private fun PlayerBottomBar(
     onToggleFavorite: (() -> Unit)?,
     onPlayModeChange: (PlayMode) -> Unit,
     onPlayModeMenuToggle: () -> Unit,
+    onShowPlayerStyle: () -> Unit,
+    playerStyleFocusRequester: FocusRequester,
     onRequestHide: () -> Unit,
     progressFocusRequester: FocusRequester,
     playPauseFocusRequester: FocusRequester,
@@ -634,6 +944,16 @@ private fun PlayerBottomBar(
             Spacer(modifier = Modifier.weight(1f))
 
             // RIGHT: 收藏 + 播放模式（聚焦时统一白图标，非聚焦时按状态着色）
+            ControlCircleButton(
+                onClick = onShowPlayerStyle,
+                contentDescription = "切换播放页风格",
+                focusRequester = playerStyleFocusRequester
+            ) { _ ->
+                Text("风格", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            }
+
+            Spacer(modifier = Modifier.width(20.dp))
+
             ControlCircleButton(
                 onClick = { onToggleFavorite?.invoke() },
                 contentDescription = if (isFavorite) "取消收藏" else "收藏"
@@ -1423,6 +1743,8 @@ private fun LyricPanel(
     // 2.8 翻译歌词（设置页开关控制是否传入；null 表示无翻译或已关闭）
     translation: String? = null,
     currentTimeMs: Long,
+    // 播放页歌词展示风格：影响字号/对齐/是否逐字高亮
+    style: PlayerLyricStyle = PlayerLyricStyle.CLASSIC,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -1449,6 +1771,7 @@ private fun LyricPanel(
             ScrollingLyrics(
                 lyrics = lyrics,
                 currentTimeMs = currentTimeMs,
+                style = style,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -1457,11 +1780,13 @@ private fun LyricPanel(
 
 /**
  * 滚动歌词（瞬时跳转，避免动画叠加）
+ * @param style CLASSIC 为默认左对齐小字；CENTERED_BIG 居中大字
  */
 @Composable
 private fun ScrollingLyrics(
     lyrics: List<LyricLine>,
     currentTimeMs: Long,
+    style: PlayerLyricStyle = PlayerLyricStyle.CLASSIC,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -1473,21 +1798,27 @@ private fun ScrollingLyrics(
             listState.scrollToItem(index = (currentIndex - 2).coerceAtLeast(0))
         }
     }
+    val bigCentered = style != PlayerLyricStyle.CLASSIC
     LazyColumn(
         state = listState,
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalAlignment = if (bigCentered) Alignment.CenterHorizontally else Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(if (bigCentered) 20.dp else 12.dp)
     ) {
         // key 用索引：歌词中可能存在多条同时间戳的行（如多行 [00:00.00]），
         // 用 timeMs 做 key 会重复抛 IllegalArgumentException（v168 日语歌实测闪退）
-        itemsIndexed(lyrics, key = { index, _ -> index }) { _, line ->
+        itemsIndexed(lyrics, key = { index, _ -> index }) { index, line ->
             val isCurrent = line.timeMs == lyrics.getOrNull(currentIndex)?.timeMs
-            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(vertical = if (bigCentered) 6.dp else 4.dp),
+                horizontalAlignment = if (bigCentered) Alignment.CenterHorizontally else Alignment.Start
+            ) {
                 Text(
                     text = line.text.ifBlank { "♪" },
-                    fontSize = if (isCurrent) 22.sp else 16.sp,
+                    fontSize = if (bigCentered) (if (isCurrent) 30.sp else 18.sp) else (if (isCurrent) 22.sp else 16.sp),
                     color = if (isCurrent) Color.White else Color.White.copy(alpha = 0.45f),
                     fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                    textAlign = if (bigCentered) TextAlign.Center else TextAlign.Start,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -1498,6 +1829,7 @@ private fun ScrollingLyrics(
                         fontSize = if (isCurrent) 14.sp else 12.sp,
                         color = if (isCurrent) Color.White.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.32f),
                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                        textAlign = if (bigCentered) TextAlign.Center else TextAlign.Start,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 2.dp)

@@ -198,6 +198,8 @@ fun LXMusicApp() {
             val preferredQuality by viewModel.preferredQuality.collectAsState()
             // 2.8 歌词设置：是否显示翻译歌词
             val lyricTranslationEnabled by viewModel.lyricTranslationEnabled.collectAsState()
+            // 播放页歌词展示风格（设置页可切换）
+            val playerLyricStyle by viewModel.playerLyricStyle.collectAsState()
             val browseItems by viewModel.browseItems.collectAsState()
             val browseSongs by viewModel.browseSongs.collectAsState()
             val browseLoading by viewModel.browseLoading.collectAsState()
@@ -318,6 +320,9 @@ fun LXMusicApp() {
                 // 2.8 歌词设置：是否显示翻译歌词
                 lyricTranslationEnabled = lyricTranslationEnabled,
                 onLyricTranslationEnabledChange = { viewModel.setLyricTranslationEnabled(it) },
+                // 播放页歌词展示风格
+                playerLyricStyle = playerLyricStyle,
+                onPlayerLyricStyleChange = { viewModel.setPlayerLyricStyle(it) },
                 browseItems = browseItems,
                 browseSongs = browseSongs,
                 browseLoading = browseLoading,
@@ -548,6 +553,8 @@ fun LXMusicApp() {
             // 2.8 翻译歌词 + 显示开关
             val currentLyricTranslation by viewModel.currentLyricTranslation.collectAsState()
             val lyricTranslationEnabled by viewModel.lyricTranslationEnabled.collectAsState()
+            // 播放页歌词展示风格（设置页可切换）
+            val playerLyricStyle by viewModel.playerLyricStyle.collectAsState()
             // 2.8 实际播放音质
             val currentPlayQuality by viewModel.currentPlayQuality.collectAsState()
             val playMode by viewModel.playMode.collectAsState()
@@ -575,6 +582,9 @@ fun LXMusicApp() {
                 // 2.8 翻译歌词 + 开关
                 currentLyricTranslation = currentLyricTranslation,
                 lyricTranslationEnabled = lyricTranslationEnabled,
+                // 播放页歌词展示风格
+                playerLyricStyle = playerLyricStyle,
+                onPlayerLyricStyleChange = { viewModel.setPlayerLyricStyle(it) },
                 // 2.8 实际播放音质
                 currentPlayQuality = currentPlayQuality,
                 playlist = playlist,
